@@ -79,6 +79,12 @@ class Spdx3Payload(Payload):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__()
         self.passthrough_elements: list[dict[str, Any]] = []
+        # 3.0.1 moved dataLicense onto SpdxDocument and replaced CreationInfo's
+        # profile with Element.profileConformance. spdx-tools 0.8.5 models the
+        # pre-3.0.1 draft and has no slot for either, so they ride here instead
+        # of being dropped on the floor.
+        self.document_data_license: str | None = None
+        self.document_profile_conformance: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +495,32 @@ def _parse_spdx_document(elem: dict[str, Any], ci_map: dict[str, CreationInfo] |
     return SpdxDocument(**fields)
 
 
+def _capture_document_fields(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
+    """Carry the two document-level fields the draft model cannot hold.
+
+    ``dataLicense`` is read from the SpdxDocument, which is where 3.0.1 puts
+    it, and from the CreationInfo as a fallback, which is where this repo's
+    older fixtures and spdx-tools both put it.
+    """
+    data_license = elem.get("dataLicense")
+    if not isinstance(data_license, str) or not data_license:
+        # The draft location, which this repo's older fixtures use. Read from
+        # the raw dict, never from the parsed CreationInfo: the model defaults
+        # data_license to "CC0-1.0", and writing that onto a document whose
+        # author declared none both invents a claim and fails the schema, which
+        # wants a licence IRI rather than a short identifier.
+        ci = elem.get("creationInfo")
+        data_license = ci.get("dataLicense") if isinstance(ci, dict) else None
+    if isinstance(data_license, str) and data_license:
+        payload.document_data_license = data_license
+
+    profiles = elem.get("profileConformance")
+    if isinstance(profiles, str):
+        profiles = [profiles]
+    if isinstance(profiles, list):
+        payload.document_profile_conformance = [p for p in profiles if isinstance(p, str)]
+
+
 def _parse_relationship(elem: dict[str, Any], ci_map: dict[str, CreationInfo] | None = None) -> Relationship:
     """Parse a Relationship element."""
     fields = _parse_common_fields(elem, ci_map)
@@ -581,6 +613,7 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
         try:
             if elem_type == "SpdxDocument":
                 payload.add_element(_parse_spdx_document(elem, ci_map))
+                _capture_document_fields(payload, elem)
             elif elem_type == "Package":
                 payload.add_element(_parse_package(elem, ci_map))
             elif elem_type == "File":
@@ -649,6 +682,13 @@ def _normalize_serialized_element(elem: dict[str, Any]) -> None:
     if "standard" in elem:
         elem["standardName"] = elem.pop("standard")
 
+    # spdx_tools writes the draft spelling; 3.0.1 renamed the property, the
+    # class and the type field, and rejects the old names outright.
+    if "externalReference" in elem:
+        elem["externalRef"] = elem.pop("externalReference")
+
+    _strip_draft_creation_info_fields(elem)
+
     # --- recurse into nested dicts / lists ---
     for value in elem.values():
         if isinstance(value, dict):
@@ -659,10 +699,30 @@ def _normalize_serialized_element(elem: dict[str, Any]) -> None:
                     _normalize_nested_dict(item)
 
 
+#: What 3.0.1 allows on a CreationInfo. ``dataLicense`` moved to SpdxDocument
+#: and ``profile`` became Element.profileConformance; spdx-tools 0.8.5 still
+#: emits both, and ``CreationInfo_props`` is ``unevaluatedProperties: false``,
+#: so either one invalidates every element carrying that CreationInfo.
+_CREATION_INFO_DRAFT_ONLY = ("dataLicense", "profile")
+
+
+def _strip_draft_creation_info_fields(d: dict[str, Any]) -> None:
+    """Drop the pre-3.0.1 CreationInfo keys, if this dict is one."""
+    if d.get("type") != "CreationInfo" and "specVersion" not in d:
+        return
+    for key in _CREATION_INFO_DRAFT_ONLY:
+        d.pop(key, None)
+
+
 def _normalize_nested_dict(d: dict[str, Any]) -> None:
     """Normalize ``@type`` → ``type`` in a nested dict (creationInfo, Hash, etc.)."""
     if "@type" in d:
         d["type"] = d.pop("@type")
+    if d.get("type") == "ExternalReference":
+        d["type"] = "ExternalRef"
+    if "externalReferenceType" in d:
+        d["externalRefType"] = d.pop("externalReferenceType")
+    _strip_draft_creation_info_fields(d)
     # Recurse for deeper nesting (e.g. ExternalIdentifier inside verifiedUsing)
     for value in d.values():
         if isinstance(value, dict):
@@ -687,6 +747,7 @@ def _normalize_passthrough_element(elem: dict[str, Any]) -> None:
         id_val = elem["@id"]
         if isinstance(id_val, str) and not id_val.startswith("_:"):
             elem["spdxId"] = elem.pop("@id")
+    _strip_draft_creation_info_fields(elem)
     # Recurse into nested dicts (e.g. inline creationInfo, externalIdentifier)
     for value in elem.values():
         if isinstance(value, dict):
@@ -695,6 +756,26 @@ def _normalize_passthrough_element(elem: dict[str, Any]) -> None:
             for item in value:
                 if isinstance(item, dict):
                     _normalize_nested_dict(item)
+
+
+def _restore_document_fields(payload: Payload, element_list: list[dict[str, Any]]) -> None:
+    """Write dataLicense and profileConformance onto the SpdxDocument.
+
+    3.0.1 puts both there; the draft model spdx-tools 0.8.5 implements has no
+    slot for either, so the parser stashed them on the payload. A document
+    that declared no profileConformance does not gain one: claiming a profile
+    asserts that every contained element meets its restrictions.
+    """
+    if not isinstance(payload, Spdx3Payload):
+        return
+    for elem in element_list:
+        if elem.get("type") != "SpdxDocument":
+            continue
+        if payload.document_data_license:
+            elem["dataLicense"] = payload.document_data_license
+        if payload.document_profile_conformance:
+            elem["profileConformance"] = list(payload.document_profile_conformance)
+        return
 
 
 def write_spdx3_file(
@@ -732,6 +813,8 @@ def write_spdx3_file(
         for elem in passthrough_copy:
             _normalize_passthrough_element(elem)
         element_list.extend(passthrough_copy)
+
+    _restore_document_fields(payload, element_list)
 
     complete_dict = {"@context": context_url, "@graph": element_list}
 
