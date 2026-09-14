@@ -816,8 +816,12 @@ def _add_compositions_if_missing(json_str: str) -> str:
 # SPDX Version Management
 # ============================================================================
 
-# SPDX versions supported (2.x via spdx-tools library, 3.0.1 via custom parser/writer in spdx3.py)
-SUPPORTED_SPDX_VERSIONS = ["2.2", "2.3", "3.0.1"]
+# SPDX versions supported (2.x via spdx-tools library, 3.0.x via the custom
+# parser/writer in spdx3.py). Wider than _generation.protocol.SPDX_VERSIONS,
+# which is what a generator can emit from a lock file: nothing generates an
+# SPDX 3 document, but one supplied through SBOM_FILE is read, validated and
+# written back at the version it declares.
+SUPPORTED_SPDX_VERSIONS = ["2.2", "2.3", "3.0.0", "3.0.1"]
 
 # Default SPDX version
 DEFAULT_SPDX_VERSION = "2.3"
@@ -852,8 +856,11 @@ def validate_spdx_version(version: str) -> bool:
     """
     Check if SPDX version is supported.
 
+    Supported means this package can read and write it, which is wider than
+    what it can generate. Nothing generates an SPDX 3 document.
+
     Args:
-        version: SPDX version string (e.g., "2.3", "3.0")
+        version: SPDX version string (e.g., "2.3", "3.0.1")
 
     Returns:
         True if supported, False otherwise
@@ -861,8 +868,10 @@ def validate_spdx_version(version: str) -> bool:
     Examples:
         >>> validate_spdx_version("2.3")
         True
+        >>> validate_spdx_version("3.0.0")
+        True
         >>> validate_spdx_version("3.0")
-        False  # Until SPDX 3.0 support is added
+        False  # The 3.0 line has two releases; name the one you mean
     """
     return version in SUPPORTED_SPDX_VERSIONS
 

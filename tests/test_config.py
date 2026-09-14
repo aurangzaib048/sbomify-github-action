@@ -1305,10 +1305,6 @@ class TestSpecVersionValidation(unittest.TestCase):
         config.validate()  # no error
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestSubmoduleConfig(unittest.TestCase):
     """Validation rules for submodule (attach-or-backfill) mode."""
 
@@ -1361,3 +1357,89 @@ class TestSubmoduleConfig(unittest.TestCase):
             ):
                 config = load_config()
         self.assertIsNone(config.submodule_path)
+
+
+class TestSpdx3AdviceIsRoutableAdvice(unittest.TestCase):
+    """The SPEC_VERSION guard sends the user somewhere. Everywhere it sends
+    them has to work for the version they asked for.
+    """
+
+    def _error(self, spec_version: str) -> str:
+        config = Config(
+            token="test-token",
+            component_id="test-component",
+            lock_file="/path/to/requirements.txt",
+            sbom_format="spdx",
+            spec_version=spec_version,
+        )
+        with self.assertRaises(ConfigurationError) as cm:
+            config.validate()
+        return str(cm.exception)
+
+    def test_300_gets_the_same_hint_as_301(self):
+        """The hint was pinned to the literal "3.0.1". 3.0 is what syft,
+        Microsoft sbom-tool, JFrog Xray and Yocto 5.x emit, so it is just as
+        likely to be asked for, and it fell through to the bare message."""
+        message = self._error("3.0.0")
+
+        self.assertIn("cannot be generated", message)
+        self.assertIn("SBOM_FILE", message)
+
+    def test_31_is_not_sent_to_a_route_that_also_refuses_it(self):
+        """SBOM_FILE only accepts what the reader accepts, and 3.1 is not in
+        that set, so offering it there would cost the user a second round
+        trip to the same answer."""
+        message = self._error("3.1.0")
+
+        self.assertIn("Nor is it read", message)
+        self.assertNotIn("pass an existing 3.1.0 document", message)
+
+    def test_it_names_the_versions_sbom_file_does_accept(self):
+        message = self._error("3.1.0")
+
+        self.assertIn("3.0.0", message)
+        self.assertIn("3.0.1", message)
+
+    def test_the_empty_sbom_route_says_which_version_it_writes(self):
+        """create_empty_sbom writes 3.0.1 whatever was asked for, so naming it
+        beats implying the request is honoured."""
+        message = self._error("3.0.0")
+
+        self.assertIn("which writes 3.0.1", message)
+
+
+class TestActionYmlExposesTheFormatKnobs(unittest.TestCase):
+    """SBOM_FORMAT and SPEC_VERSION had to be smuggled through a raw `env:`
+    block, because action.yml exposed neither.
+    """
+
+    @staticmethod
+    def _action_yml() -> dict:
+        import yaml
+
+        return yaml.safe_load((Path(__file__).parent.parent / "action.yml").read_text())
+
+    def test_both_are_inputs(self):
+        inputs = self._action_yml()["inputs"]
+
+        self.assertIn("sbom-format", inputs)
+        self.assertIn("spec-version", inputs)
+
+    def test_both_reach_the_container_as_their_environment_variables(self):
+        env = self._action_yml()["runs"]["env"]
+
+        self.assertEqual(env["SBOM_FORMAT"], "${{ inputs['sbom-format'] }}")
+        self.assertEqual(env["SPEC_VERSION"], "${{ inputs['spec-version'] }}")
+
+    def test_every_input_is_wired_to_an_environment_variable(self):
+        """An input that reaches nothing is worse than no input: it looks
+        supported and is silently dropped."""
+        action = self._action_yml()
+        wired = " ".join(str(v) for v in action["runs"]["env"].values())
+
+        for name in action["inputs"]:
+            self.assertIn(f"inputs['{name}']", wired, f"{name} is declared but reaches no env var")
+
+
+if __name__ == "__main__":
+    unittest.main()
