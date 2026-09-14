@@ -1,4 +1,5 @@
-"""What the action writes must pass the schema the action ships.
+"""What the action writes must pass the schema the action ships, and say what
+the producer said.
 
 Every SPDX 3 file the writer produced failed `spdx-3.0.1.schema.json`, the
 copy bundled in this repo, because spdx-tools 0.8.5 models a pre-3.0.1 draft:
@@ -6,10 +7,14 @@ its CreationInfo still carries `profile` and `data_license`, both of which
 3.0.1 moved or removed. `CreationInfo_props` allows exactly
 comment/created/createdBy/createdUsing/specVersion under
 `unevaluatedProperties: false`, so one extra key invalidates every element in
-the document.
+the document. That is what makes AUGMENT=true or ENRICH=true on any SPDX 3
+input an unconditional exit 1: both re-validate their own output.
 
-That is what makes AUGMENT=true or ENRICH=true on any SPDX 3 input an
-unconditional exit 1: both re-validate their own output.
+The quieter half of the same draft model is worse, because nothing fails. The
+library's enums cannot hold 37 of 3.0.1's 59 relationship types or two of its
+purposes, and it substitutes a legal value rather than refusing, so the
+rewritten document validates while stating something its author never wrote.
+Those cases need an assertion on the value, not on the error count.
 """
 
 from __future__ import annotations
@@ -20,7 +25,16 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from sbomify_action.spdx3 import parse_spdx3_data, parse_spdx3_file, write_spdx3_file
+from sbomify_action.spdx3 import (
+    Organization,
+    Package,
+    make_spdx3_creation_info,
+    parse_spdx3_data,
+    parse_spdx3_file,
+    spdx3_license_from_string,
+    spdx3_licenses_from_list,
+    write_spdx3_file,
+)
 
 FIXTURE = Path(__file__).parent / "test-data" / "spdx3_conformant.json"
 SCHEMA = Path(__file__).parent.parent / "sbomify_action" / "schemas" / "spdx" / "spdx-3.0.1.schema.json"
@@ -42,6 +56,14 @@ def _errors(validator, document: dict) -> list[str]:
 def round_tripped(tmp_path: Path) -> dict:
     out = tmp_path / "out.json"
     write_spdx3_file(parse_spdx3_file(str(FIXTURE)), str(out))
+    return json.loads(out.read_text())
+
+
+def _write(source: dict, tmp_path: Path) -> dict:
+    """The document as the writer produces it, from a raw source dict."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    out = tmp_path / "out.json"
+    write_spdx3_file(parse_spdx3_data(source), str(out))
     return json.loads(out.read_text())
 
 
@@ -148,18 +170,13 @@ class TestADeclaredDataLicense:
 
     LICENSE = "https://spdx.org/licenses/CC0-1.0"
 
-    def _write(self, source: dict, tmp_path: Path) -> dict:
-        out = tmp_path / "out.json"
-        write_spdx3_file(parse_spdx3_data(source), str(out))
-        return json.loads(out.read_text())
-
     def test_it_survives_on_the_document(self, tmp_path, validator):
         source = json.loads(FIXTURE.read_text())
         for element in source["@graph"]:
             if element.get("type") == "SpdxDocument":
                 element["dataLicense"] = self.LICENSE
 
-        result = self._write(source, tmp_path)
+        result = _write(source, tmp_path)
 
         assert _elements(result, "SpdxDocument")[0]["dataLicense"] == self.LICENSE
         assert _errors(validator, result) == []
@@ -178,7 +195,7 @@ class TestADeclaredDataLicense:
                     "dataLicense": self.LICENSE,
                 }
 
-        result = self._write(source, tmp_path)
+        result = _write(source, tmp_path)
         document = _elements(result, "SpdxDocument")[0]
 
         assert document["dataLicense"] == self.LICENSE
@@ -204,24 +221,19 @@ class TestTheSpecVersionSurvives:
                 element["specVersion"] = "3.0.0"
         return source
 
-    def _write(self, source: dict, tmp_path: Path) -> dict:
-        out = tmp_path / "out.json"
-        write_spdx3_file(parse_spdx3_data(source), str(out))
-        return json.loads(out.read_text())
-
     def test_a_300_input_stays_300(self, tmp_path):
-        result = self._write(self._as_300(), tmp_path)
+        result = _write(self._as_300(), tmp_path)
 
         assert result["@context"] == "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
 
     def test_the_context_and_the_spec_version_agree(self, tmp_path):
         """Relabelling one and not the other is worse than either alone."""
-        result = self._write(self._as_300(), tmp_path)
+        result = _write(self._as_300(), tmp_path)
 
         assert _creation_infos(result)[0]["specVersion"] == "3.0.0"
 
     def test_a_301_input_stays_301(self, tmp_path):
-        result = self._write(json.loads(FIXTURE.read_text()), tmp_path)
+        result = _write(json.loads(FIXTURE.read_text()), tmp_path)
 
         assert result["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
@@ -294,3 +306,334 @@ class TestPurposesTheLibraryHasNotHeardOf:
         package = _elements(json.loads(out.read_text()), "software_Package")[0]
 
         assert "software_primaryPurpose" not in package
+
+
+class TestRelationshipTypesSurvive:
+    """spdx-tools 0.8.5 holds 62 relationship types; 37 of 3.0.1's 59 are not
+    among them, and its parser maps anything it does not recognise to
+    ``other``. ``other`` is itself legal, so the rewritten document passes the
+    schema while saying something different from what the producer wrote: a
+    declared licence, a static link and a prerequisite all come back as an
+    unspecified relationship to the same target.
+    """
+
+    @pytest.mark.parametrize(
+        "relationship_type",
+        ["hasDeclaredLicense", "hasConcludedLicense", "hasStaticLink", "hasPrerequisite", "hasOptionalDependency"],
+    )
+    def test_a_type_the_library_predates_is_not_rewritten(self, relationship_type, tmp_path, validator):
+        source = json.loads(FIXTURE.read_text())
+        for element in source["@graph"]:
+            if element.get("type") == "Relationship":
+                element["relationshipType"] = relationship_type
+                break
+
+        written = _write(source, tmp_path)
+
+        assert _errors(validator, written) == []
+        assert _elements(written, "Relationship")[0]["relationshipType"] == relationship_type
+
+    def test_a_type_the_library_does_hold_still_survives(self, tmp_path):
+        source = json.loads(FIXTURE.read_text())
+        source["@graph"][-1]["relationshipType"] = "contains"
+
+        written = _write(source, tmp_path)
+
+        assert "contains" in [r["relationshipType"] for r in _elements(written, "Relationship")]
+
+    def test_the_fixture_licence_relationships_round_trip(self, round_tripped):
+        assert sorted(r["relationshipType"] for r in _elements(round_tripped, "Relationship")) == [
+            "hasConcludedLicense",
+            "hasDeclaredLicense",
+        ]
+
+
+class TestLicencesAreRelationshipsNotProperties:
+    """3.0.1 has no declaredLicense or concludedLicense property: a licence is
+    a Relationship to a licensing element. spdx-tools still models both as
+    fields, so the licence the action worked out was written somewhere the
+    schema rejects and no conforming reader looks, sbomify's own included.
+    """
+
+    def _write_with_licence(self, licence, tmp_path: Path) -> dict:
+        """The document the action produces after stating a declared licence.
+
+        Goes through the model field the way enrichment and augmentation do,
+        rather than putting the property on the source: the parser has no slot
+        for it, so a source-level property would never reach the writer and
+        the test would pass without exercising anything.
+        """
+        source = json.loads(FIXTURE.read_text())
+        source["@graph"] = [e for e in source["@graph"] if e.get("type") != "Relationship"]
+        payload = parse_spdx3_data(source)
+        package = next(p for p in payload.get_full_map().values() if isinstance(p, Package))
+        package.declared_license = licence
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+        return json.loads(out.read_text())
+
+    def _licence_of(self, document: dict, relationship_type: str) -> str | None:
+        by_id = {e.get("spdxId"): e for e in document["@graph"]}
+        for relationship in _elements(document, "Relationship"):
+            if relationship["relationshipType"] != relationship_type:
+                continue
+            return by_id.get(relationship["to"][0], {}).get("simplelicensing_licenseExpression")
+        return None
+
+    def test_the_property_never_reaches_the_output(self, tmp_path, validator):
+        written = self._write_with_licence(spdx3_license_from_string("MIT"), tmp_path)
+
+        assert _errors(validator, written) == []
+        assert all("declaredLicense" not in e for e in written["@graph"])
+
+    def test_the_licence_becomes_a_relationship_a_reader_can_follow(self, tmp_path):
+        written = self._write_with_licence(spdx3_license_from_string("MIT"), tmp_path)
+
+        assert self._licence_of(written, "hasDeclaredLicense") == "MIT"
+
+    def test_an_expression_is_not_flattened_to_its_placeholder_id(self, tmp_path):
+        """spdx3_license_from_string has no expression class to reach for, so
+        for anything that is not a bare identifier it mints a CustomLicense
+        with a synthesised `LicenseRef-MIT-OR-Apache-2-0` id. Publishing that
+        id would report a licence nobody wrote."""
+        written = self._write_with_licence(spdx3_license_from_string("MIT OR Apache-2.0"), tmp_path)
+
+        assert self._licence_of(written, "hasDeclaredLicense") == "MIT OR Apache-2.0"
+
+    def test_a_licence_set_composes_back_into_one_expression(self, tmp_path):
+        written = self._write_with_licence(spdx3_licenses_from_list(["MIT", "Apache-2.0"]), tmp_path)
+
+        assert self._licence_of(written, "hasDeclaredLicense") == "MIT OR Apache-2.0"
+
+    @pytest.mark.parametrize("nothing", ["NOASSERTION", "NONE"])
+    def test_asserting_nothing_writes_no_relationship(self, nothing, tmp_path):
+        """A relationship pointing at nothing asserts less than no
+        relationship, and reads back as a licence that is not one."""
+        written = self._write_with_licence(spdx3_license_from_string(nothing), tmp_path)
+
+        assert _elements(written, "Relationship") == []
+
+    def test_a_licence_is_countersigned_by_the_element_it_describes(self, tmp_path, validator):
+        """The minted licence and relationship carry the package's own
+        creationInfo, so neither adds provenance nobody can account for."""
+        written = self._write_with_licence(spdx3_license_from_string("MIT"), tmp_path)
+        package = _elements(written, "software_Package")[0]
+        relationship = _elements(written, "Relationship")[0]
+        by_id = {e.get("spdxId"): e for e in written["@graph"]}
+
+        minted = by_id[relationship["to"][0]]
+        assert minted["creationInfo"] == package["creationInfo"] == relationship["creationInfo"]
+
+
+class TestWhatTheActionMintsSaysWhoMintedIt:
+    """``CreationInfo_props`` requires createdBy with minItems 1, so an
+    element the action adds with no creator named fails and takes every
+    element sharing its CreationInfo down with it. Augmentation and
+    enrichment add a Tool, an Organization and a Person each.
+    """
+
+    def _with_minted_organization(self, tmp_path: Path) -> dict:
+        """The fixture plus one Organization added the way the action adds one."""
+        payload = parse_spdx3_data(json.loads(FIXTURE.read_text()))
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme Corp", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+        return json.loads(out.read_text())
+
+    def test_the_document_still_validates(self, tmp_path, validator):
+        assert _errors(validator, self._with_minted_organization(tmp_path)) == []
+
+    def test_the_named_agent_is_in_the_graph(self, tmp_path):
+        """A createdBy pointing at an element nobody wrote is a dangling
+        reference, which is how the minted agent would otherwise read."""
+        written = self._with_minted_organization(tmp_path)
+        minted = next(e for e in written["@graph"] if e.get("spdxId") == "urn:acme:minted")
+
+        named = minted["creationInfo"]["createdBy"][0]
+        assert named in {e.get("spdxId") for e in written["@graph"]}
+
+    def test_the_agent_is_not_a_tool(self, tmp_path):
+        """3.0.1 is strict about it: createdBy takes an Agent, and Tool is
+        not one."""
+        assert _elements(self._with_minted_organization(tmp_path), "SoftwareAgent") != []
+
+    def test_a_document_that_already_names_its_creators_gains_no_agent(self, round_tripped):
+        assert _elements(round_tripped, "SoftwareAgent") == []
+
+    def test_a_creation_info_that_arrived_without_one_is_left_alone(self, tmp_path):
+        """The action does not know who created that element, and naming
+        itself there would state provenance nobody wrote."""
+        source = json.loads(FIXTURE.read_text())
+        source["@graph"].append(
+            {
+                "type": "Organization",
+                "spdxId": "urn:acme:theirs",
+                "name": "Someone Else",
+                "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1", "created": "2026-01-01T00:00:00Z"},
+            }
+        )
+
+        written = _write(source, tmp_path)
+
+        theirs = next(e for e in written["@graph"] if e.get("spdxId") == "urn:acme:theirs")
+        assert "createdBy" not in theirs["creationInfo"]
+
+    def test_the_agent_id_is_stable_across_runs(self, tmp_path):
+        """A fresh uuid per run would put a spurious element in every diff."""
+        first = self._with_minted_organization(tmp_path / "a")
+        second = self._with_minted_organization(tmp_path / "b")
+
+        assert _elements(first, "SoftwareAgent")[0]["spdxId"] == _elements(second, "SoftwareAgent")[0]["spdxId"]
+
+
+class TestTheSupplierIsOne:
+    """3.0.1 gives an artifact exactly one suppliedBy; originatedBy is the
+    set. spdx-tools models both as lists, so a supplier the action worked out
+    was written as a one-element array the schema refuses.
+    """
+
+    def _with_supplier(self, value) -> dict:
+        source = json.loads(FIXTURE.read_text())
+        for element in source["@graph"]:
+            if element.get("type") == "software_Package":
+                element["suppliedBy"] = value
+        return source
+
+    def test_a_supplier_is_written_as_one_value(self, tmp_path, validator):
+        written = _write(self._with_supplier("urn:acme:agent"), tmp_path)
+
+        assert _errors(validator, written) == []
+        package = _elements(written, "software_Package")[0]
+        assert package["suppliedBy"] == "urn:acme:agent"
+
+    def test_originated_by_stays_a_list(self, round_tripped):
+        package = _elements(round_tripped, "software_Package")[0]
+
+        assert package["originatedBy"] == ["urn:acme:agent"]
+
+
+class TestEnrichAndAugmentProduceValidDocuments:
+    """Both re-validate their own output, so a schema error here is exit 1 on
+    a document that arrived clean. These run the real entry points: the
+    defects were in what the writer emitted for the elements they add, which
+    a writer-only test does not reach.
+    """
+
+    LICENCE = "MIT OR Apache-2.0"
+
+    @staticmethod
+    def _undeclared() -> dict:
+        """The fixture with its licence relationships removed."""
+        source = json.loads(FIXTURE.read_text())
+        source["@graph"] = [e for e in source["@graph"] if e.get("type") != "Relationship"]
+        return source
+
+    def _enriched(self, source: dict, tmp_path: Path) -> dict:
+        from sbomify_action._enrichment.metadata import NormalizedMetadata
+        from sbomify_action.enrichment import _enrich_spdx3_sbom
+
+        metadata = NormalizedMetadata()
+        metadata.licenses = [self.LICENCE]
+        metadata.supplier = "Acme Corp"
+        metadata.source = "test"
+
+        class _Enricher:
+            def fetch_metadata(self, purl, merge_results=True):
+                return metadata
+
+        source_path, out = tmp_path / "in.json", tmp_path / "out.json"
+        source_path.write_text(json.dumps(source))
+        _enrich_spdx3_sbom(source_path, out, _Enricher())
+        return json.loads(out.read_text())
+
+    def _augmented(self, source: dict, tmp_path: Path, **kwargs) -> dict:
+        from sbomify_action.augmentation import augment_spdx3_sbom
+
+        source_path, out = tmp_path / "in.json", tmp_path / "out.json"
+        source_path.write_text(json.dumps(source))
+        augment_spdx3_sbom(
+            str(source_path),
+            str(out),
+            {"supplier": {"name": "Acme Corp"}, "authors": [{"name": "A Person"}], "licenses": [{"spdx_id": "MIT"}]},
+            **kwargs,
+        )
+        return json.loads(out.read_text())
+
+    def _declared(self, document: dict) -> list[str]:
+        by_id = {e.get("spdxId"): e for e in document["@graph"]}
+        return [
+            by_id.get(r["to"][0], {}).get("simplelicensing_licenseExpression")
+            for r in _elements(document, "Relationship")
+            if r["relationshipType"] == "hasDeclaredLicense"
+        ]
+
+    def test_enrich_leaves_a_valid_document_valid(self, tmp_path, validator):
+        assert _errors(validator, self._enriched(self._undeclared(), tmp_path)) == []
+
+    def test_augment_leaves_a_valid_document_valid(self, tmp_path, validator):
+        assert _errors(validator, self._augmented(self._undeclared(), tmp_path)) == []
+
+    def test_enrich_states_the_licence_where_a_reader_looks(self, tmp_path):
+        assert self._declared(self._enriched(self._undeclared(), tmp_path)) == [self.LICENCE]
+
+    def test_enrich_does_not_second_guess_a_package_that_already_declared(self, tmp_path):
+        """declared_license is unset on any package whose author stated a
+        licence the 3.0.1 way, so reading that field alone as "no licence" is
+        how a contradicting second declaration got added."""
+        enriched = self._enriched(json.loads(FIXTURE.read_text()), tmp_path)
+
+        assert self._declared(enriched) == ["MIT"]
+
+    def test_augment_does_not_second_guess_either(self, tmp_path):
+        assert self._declared(self._augmented(json.loads(FIXTURE.read_text()), tmp_path)) == ["MIT"]
+
+    def test_overriding_replaces_the_declaration_rather_than_adding_one(self, tmp_path):
+        """Two hasDeclaredLicense relationships that disagree are worse than
+        either of them alone."""
+        augmented = self._augmented(json.loads(FIXTURE.read_text()), tmp_path, override_sbom_metadata=True)
+
+        assert self._declared(augmented) == ["MIT"]
+        assert len(_elements(augmented, "Relationship")) == 2  # the concluded one is untouched
+
+    def test_enrich_names_one_supplier_not_a_list_of_one(self, tmp_path):
+        package = _elements(self._enriched(self._undeclared(), tmp_path), "software_Package")[0]
+
+        assert isinstance(package["suppliedBy"], str)
+
+    def test_the_agents_enrich_mints_say_who_created_them(self, tmp_path):
+        enriched = self._enriched(self._undeclared(), tmp_path)
+
+        minted = _elements(enriched, "Organization")
+        assert minted and all(_creation_infos(e)[0].get("createdBy") for e in minted)
+
+
+class TestTheOtherWritePaths:
+    """The paths that write SPDX 3 without validating, so an invalid document
+    from one of them reaches the upload rather than the log.
+    """
+
+    def test_an_empty_sbom_validates(self, tmp_path, validator):
+        """`create_empty_sbom` built its own CreationInfo beside
+        make_spdx3_creation_info and left createdBy empty, so both elements it
+        writes failed."""
+        from sbomify_action.additional_packages import create_empty_sbom
+
+        out = tmp_path / "empty.json"
+        create_empty_sbom(str(out), "spdx", spec_version="3.0.1")
+
+        assert _errors(validator, json.loads(out.read_text())) == []
+
+    def test_a_component_override_leaves_the_document_valid(self, tmp_path, validator):
+        """What the CLI does for COMPONENT_NAME and COMPONENT_VERSION."""
+        payload = parse_spdx3_data(json.loads(FIXTURE.read_text()))
+        package = next(p for p in payload.get_full_map().values() if isinstance(p, Package))
+        package.name, package.package_version = "renamed", "9.9.9"
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+
+        written = json.loads(out.read_text())
+        assert _errors(validator, written) == []
+        assert _elements(written, "software_Package")[0]["software_packageVersion"] == "9.9.9"

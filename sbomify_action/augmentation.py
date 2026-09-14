@@ -1759,6 +1759,7 @@ def augment_spdx3_sbom(
         make_spdx3_creation_info,
         make_spdx3_spdx_id,
         parse_spdx3_file,
+        spdx3_license_relationships,
         spdx3_licenses_from_list,
         write_spdx3_file,
     )
@@ -1819,7 +1820,14 @@ def augment_spdx3_sbom(
             elif isinstance(lic_data, str):
                 license_ids.append(lic_data)
 
-        if license_ids and (not root_pkg.declared_license or override_sbom_metadata):
+        # A package whose author stated a licence the 3.0.1 way, as a
+        # relationship, has declared_license unset, so that field alone cannot
+        # tell a declared package from an undeclared one.
+        stated = spdx3_license_relationships(payload, root_pkg.spdx_id)
+        if license_ids and (not (root_pkg.declared_license or stated) or override_sbom_metadata):
+            # Overriding means one declared licence, not two that disagree.
+            for relationship in stated:
+                payload.get_full_map().pop(relationship.spdx_id, None)
             root_pkg.declared_license = spdx3_licenses_from_list(license_ids)
             logger.info(f"Set license(s): {', '.join(license_ids)}")
 
