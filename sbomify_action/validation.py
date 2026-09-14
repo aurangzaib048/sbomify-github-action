@@ -55,7 +55,21 @@ SPDX_SCHEMAS = {
     # official shacl2code output from spdx.org/schema/<version>/.
     "3.0.0": SPDX_SCHEMA_DIR / "spdx-3.0.0.schema.json",
     "3.0.1": SPDX_SCHEMA_DIR / "spdx-3.0.1.schema.json",
+    # A document that names the 3.0 line and no patch number is held to that
+    # line's first release. extract_spdx3_version reads the document's own
+    # specVersion before its @context, so this is reached only by a document
+    # that states no specVersion, which CreationInfo_props requires and which
+    # is therefore already invalid.
+    "3.0": SPDX_SCHEMA_DIR / "spdx-3.0.0.schema.json",
 }
+
+#: What a caller sending an SPDX 3 version we do not accept is told. Worded to
+#: match the backend's own rejection in sbomify/apps/sboms/schemas.py, so a
+#: user who hits both hears one answer rather than two.
+SPDX3_UNSUPPORTED_MESSAGE = (
+    "SPDX {version} is not supported. sbomify accepts SPDX 2.2, 2.3 and 3.0.x; "
+    "send 3.0.1 to also satisfy the BSI TR-03183-2 floor."
+)
 
 # Cache for loaded schemas
 _schema_cache: dict[str, dict[str, Any]] = {}
@@ -210,9 +224,9 @@ def validate_sbom_data(
             # unchecked while the README said otherwise. Refusing instead means
             # a version we have never seen is a loud failure rather than a
             # silent pass, which is the safer default for a format still
-            # adding versions.
-            supported = ", ".join(v for v in SPDX_SCHEMAS if v.startswith("3"))
-            message = f"No bundled schema for SPDX {spec_version}. Supported SPDX 3 versions: {supported}."
+            # adding versions. 3.1 is the live case: it is at RC1, BSI accepts
+            # released versions only, and the backend refuses it too.
+            message = SPDX3_UNSUPPORTED_MESSAGE.format(version=spec_version)
             logger.error(message)
             return ValidationResult.failure(
                 sbom_format=sbom_format,

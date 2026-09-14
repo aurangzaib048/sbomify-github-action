@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sbomify_action.spdx3 import extract_spdx3_version
 from sbomify_action.validation import (
     ValidationResult,
     detect_sbom_format_and_version,
@@ -468,10 +469,10 @@ class TestAnUnknownSPDX3VersionFails(unittest.TestCase):
 
         self.assertIs(result.valid, False, "a skip reports valid=None, which is not a rejection")
 
-    def test_the_message_names_what_is_supported(self):
+    def test_the_message_names_the_version_and_what_to_send(self):
         result = validate_sbom_data({"@graph": []}, "spdx", "3.1.0")
 
-        self.assertIn("3.0.0", result.error_message)
+        self.assertIn("3.1.0", result.error_message)
         self.assertIn("3.0.1", result.error_message)
 
     def test_an_unbundled_spdx_2_version_still_only_skips(self):
@@ -480,6 +481,165 @@ class TestAnUnknownSPDX3VersionFails(unittest.TestCase):
         result = validate_sbom_data({"spdxVersion": "SPDX-2.1"}, "spdx", "2.1")
 
         self.assertIsNone(result.valid)
+
+
+class TestSPDX31IsRejectedByName(unittest.TestCase):
+    """SPDX 3.1 is at RC1, BSI accepts released versions only, and the backend
+    refuses it, so shipping it here would need a backend change first.
+
+    Both spellings used to end somewhere unhelpful. `/rdf/3.1/` carries no
+    patch number, so the version regex found nothing and the document failed
+    as "Could not detect spdx spec version", naming neither SPDX nor 3.1.
+    `/rdf/3.1.0/` fell through to the unvalidated-skip path.
+    """
+
+    FIXTURE = Path(__file__).parent / "test-data" / "spdx3_conformant.json"
+
+    def _document(self, context_version: str, spec_version: str | None) -> dict:
+        document = json.loads(self.FIXTURE.read_text())
+        document["@context"] = f"https://spdx.org/rdf/{context_version}/spdx-context.jsonld"
+        for element in document["@graph"]:
+            if element.get("type") == "CreationInfo":
+                if spec_version is None:
+                    element.pop("specVersion", None)
+                else:
+                    element["specVersion"] = spec_version
+        return document
+
+    def _validate(self, document: dict) -> ValidationResult:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sbom.json"
+            path.write_text(json.dumps(document))
+            return validate_sbom_file_auto(str(path))
+
+    def test_an_unversioned_31_context_is_named(self):
+        result = self._validate(self._document("3.1", None))
+
+        self.assertIs(result.valid, False)
+        self.assertIn("SPDX 3.1 is not supported", result.error_message)
+
+    def test_a_310_context_is_named_too(self):
+        result = self._validate(self._document("3.1.0", "3.1.0"))
+
+        self.assertIs(result.valid, False)
+        self.assertIn("SPDX 3.1.0 is not supported", result.error_message)
+
+    def test_it_no_longer_reads_as_an_undetectable_version(self):
+        result = self._validate(self._document("3.1", None))
+
+        self.assertNotIn("Could not detect", result.error_message)
+
+    def test_the_wording_matches_the_backend(self):
+        """A user who hits both the action and the upload should hear one
+        answer, not two."""
+        result = self._validate(self._document("3.1", None))
+
+        self.assertIn("sbomify accepts SPDX 2.2, 2.3 and 3.0.x", result.error_message)
+        self.assertIn("BSI TR-03183-2", result.error_message)
+
+    def test_301_still_processes(self):
+        self.assertIs(self._validate(self._document("3.0.1", "3.0.1")).valid, True)
+
+    def test_300_still_processes(self):
+        self.assertIs(self._validate(self._document("3.0.0", "3.0.0")).valid, True)
+
+
+class TestTheVersionTheDocumentStates(unittest.TestCase):
+    """`CreationInfo_props` requires specVersion and every Element requires a
+    creationInfo, so a conformant document always states its version. That is
+    the normative claim; the @context is a resolution hint, and it can be an
+    unversioned alias.
+    """
+
+    def test_spec_version_beats_the_context(self):
+        document = {
+            "@context": "https://spdx.org/rdf/3.0/spdx-context.jsonld",
+            "@graph": [{"type": "CreationInfo", "specVersion": "3.0.0"}],
+        }
+
+        self.assertEqual(extract_spdx3_version(document), "3.0.0")
+
+    def test_the_context_is_the_fallback(self):
+        document = {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld", "@graph": []}
+
+        self.assertEqual(extract_spdx3_version(document), "3.0.1")
+
+    def test_a_two_part_context_is_read_rather_than_ignored(self):
+        """The regex wanted three dotted numbers, so the alias read as no
+        version at all and surfaced as "could not detect"."""
+        document = {"@context": "https://spdx.org/rdf/3.1/spdx-context.jsonld", "@graph": []}
+
+        self.assertEqual(extract_spdx3_version(document), "3.1")
+
+    def test_a_spec_version_on_anything_else_does_not_speak_for_the_document(self):
+        """This answer chooses the schema the whole document is held to."""
+        document = {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [{"type": "software_Package", "specVersion": "9.9.9"}],
+        }
+
+        self.assertEqual(extract_spdx3_version(document), "3.0.1")
+
+    def test_an_inline_creation_info_counts(self):
+        document = {
+            "@context": "https://spdx.org/rdf/3.0/spdx-context.jsonld",
+            "@graph": [{"type": "SpdxDocument", "creationInfo": {"specVersion": "3.0.1"}}],
+        }
+
+        self.assertEqual(extract_spdx3_version(document), "3.0.1")
+
+
+class TestTheUnversionedContextAlias(unittest.TestCase):
+    """`https://spdx.org/rdf/3.0/spdx-context.jsonld` resolves, and is
+    byte-identical to the 3.0.1 context today.
+
+    It cannot be validated against either schema, and not because of anything
+    this repo chose: both official schemas pin `@context` with a `const` to
+    their own fully qualified URL, so SPDX itself says a conformant document
+    names a released version. What this can do is reach that answer instead of
+    "could not detect spec version".
+    """
+
+    def test_both_schemas_pin_their_own_context(self):
+        for version in ("3.0.0", "3.0.1"):
+            schema = json.loads(
+                (
+                    Path(__file__).parent.parent / "sbomify_action" / "schemas" / "spdx" / f"spdx-{version}.schema.json"
+                ).read_text()
+            )
+
+            self.assertEqual(
+                schema["properties"]["@context"]["const"],
+                f"https://spdx.org/rdf/{version}/spdx-context.jsonld",
+            )
+
+    def test_the_error_names_the_context_to_use(self):
+        document = {
+            "@context": "https://spdx.org/rdf/3.0/spdx-context.jsonld",
+            "@graph": [
+                {
+                    "type": "CreationInfo",
+                    "@id": "_:ci",
+                    "specVersion": "3.0.0",
+                    "created": "2026-01-01T00:00:00Z",
+                    "createdBy": ["urn:a"],
+                }
+            ],
+        }
+
+        result = validate_sbom_data(document, "spdx", extract_spdx3_version(document))
+
+        self.assertIs(result.valid, False)
+        self.assertIn("https://spdx.org/rdf/3.0.0/spdx-context.jsonld", result.error_message)
+
+    def test_it_is_not_reported_as_an_unsupported_version(self):
+        """3.0.0 is supported. The alias is the problem, so saying "SPDX 3.0
+        is not supported" would send the user to fix the wrong thing."""
+        document = {"@context": "https://spdx.org/rdf/3.0/spdx-context.jsonld", "@graph": []}
+
+        result = validate_sbom_data(document, "spdx", extract_spdx3_version(document))
+
+        self.assertNotIn("is not supported", result.error_message or "")
 
 
 if __name__ == "__main__":

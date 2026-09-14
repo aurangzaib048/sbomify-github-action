@@ -110,7 +110,10 @@ SPDX3_CONTEXT_URL = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 
 # Regex to extract version from context URL
-_SPDX3_VERSION_RE = re.compile(r"spdx\.org/rdf/(\d+\.\d+\.\d+)/")
+#: Two parts or three: spdx.org/rdf/3.0/ is a real context, served and
+#: byte-identical to the 3.0.1 one today, so a document can legitimately
+#: carry a version with no patch number.
+_SPDX3_VERSION_RE = re.compile(r"spdx\.org/rdf/(\d+\.\d+(?:\.\d+)?)/")
 
 # Map JSON-LD @type → model class
 _TYPE_ALIASES: dict[str, str] = {
@@ -207,11 +210,49 @@ def is_spdx3(data: dict[str, Any]) -> bool:
     return False
 
 
-def extract_spdx3_version(data: dict[str, Any]) -> str | None:
-    """Extract the SPDX 3 spec version from the ``@context`` URL.
+def _stated_spec_version(node: Any, from_creation_info: bool = False) -> str | None:
+    """The ``specVersion`` a CreationInfo in *node* states.
 
-    Returns e.g. ``"3.0.1"`` or ``None``.
+    Only from a CreationInfo, either one that names its type or one reached as
+    a ``creationInfo`` value. That is the only place 3.0.1 puts the property,
+    and this answer chooses the schema the whole document is held to, so a
+    ``specVersion`` sitting on anything else must not speak for it.
     """
+    if isinstance(node, dict):
+        if from_creation_info or (node.get("type") or node.get("@type")) == "CreationInfo":
+            stated = node.get("specVersion")
+            if isinstance(stated, str) and stated.strip():
+                return stated.strip()
+        for key, value in node.items():
+            found = _stated_spec_version(value, key == "creationInfo")
+            if found:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _stated_spec_version(item, from_creation_info)
+            if found:
+                return found
+    return None
+
+
+def extract_spdx3_version(data: dict[str, Any]) -> str | None:
+    """The SPDX 3 spec version the document claims. e.g. ``"3.0.1"``.
+
+    The document's own ``specVersion`` comes first. ``CreationInfo_props``
+    requires it and every Element requires a creationInfo, so a conformant
+    document always states it, and it is the normative claim rather than a
+    hint.
+
+    The ``@context`` is the fallback, and only a fallback, because it can be
+    an unversioned alias: ``spdx.org/rdf/3.0/`` resolves and is byte-identical
+    to the 3.0.1 context today, so what it means depends on when the document
+    was written. A document carrying only that and no specVersion is already
+    invalid, which is the only case this order leaves ambiguous.
+    """
+    stated = _stated_spec_version(data.get("@graph", data))
+    if stated:
+        return stated
+
     ctx = data.get("@context")
     candidates: list[str] = []
     if isinstance(ctx, str):
