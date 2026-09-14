@@ -393,5 +393,94 @@ class TestValidationWithRealSchemas(unittest.TestCase):
             self.assertEqual(result.sbom_format, "spdx")
 
 
+class TestSPDX300IsCheckedNotSkipped(unittest.TestCase):
+    """3.0 and 3.0.1 are separate documents, not a version label on one.
+
+    Only 3.0.1 was bundled, so a 3.0 document validated as "skipped" and
+    passed through unchecked while the README said otherwise. 3.0 is what
+    syft, Microsoft sbom-tool, JFrog Xray and Zephyr emit, and what the
+    published Yocto 5.1 image SBOM declares.
+    """
+
+    FIXTURE = Path(__file__).parent / "test-data" / "spdx3_conformant.json"
+
+    def _document(self, version: str, file_extra: dict | None = None) -> dict:
+        document = json.loads(self.FIXTURE.read_text())
+        document["@context"] = f"https://spdx.org/rdf/{version}/spdx-context.jsonld"
+        for element in document["@graph"]:
+            if element.get("type") == "CreationInfo":
+                element["specVersion"] = version
+        if file_extra:
+            document["@graph"].append(
+                {
+                    "type": "software_File",
+                    "spdxId": "urn:acme:file1",
+                    "creationInfo": "_:creationinfo",
+                    "name": "README",
+                    **file_extra,
+                }
+            )
+        return document
+
+    def test_a_valid_300_document_is_valid(self):
+        result = validate_sbom_data(self._document("3.0.0"), "spdx", "3.0.0")
+
+        self.assertIs(result.valid, True, result.error_message or "skipped rather than checked")
+
+    def test_an_invalid_300_document_says_so(self):
+        document = self._document("3.0.0")
+        document["@graph"].append({"type": "software_Package", "spdxId": "urn:acme:p2", "nonsense": True})
+
+        result = validate_sbom_data(document, "spdx", "3.0.0")
+
+        self.assertIs(result.valid, False, "a skip reports valid=None, which is not a rejection")
+        self.assertTrue(result.error_message)
+
+    def test_the_real_yocto_51_image_is_detected_as_300(self):
+        """It declares the 3.0.0 context, which is why it was never checked."""
+        document = {"@context": "https://spdx.org/rdf/3.0.0/spdx-context.jsonld", "@graph": []}
+
+        self.assertEqual(detect_sbom_format_and_version(document), ("spdx", "3.0.0"))
+
+    def test_the_two_schemas_are_not_interchangeable(self):
+        """3.0.1 renamed File.software_contentType to contentType, so each
+        schema rejects what the other requires. Pointing 3.0 at the 3.0.1
+        schema would fail documents that are correct."""
+        as_300 = self._document("3.0.0", {"software_contentType": "text/plain"})
+        as_301 = self._document("3.0.1", {"contentType": "text/plain"})
+
+        self.assertIs(validate_sbom_data(as_300, "spdx", "3.0.0").valid, True)
+        self.assertIs(validate_sbom_data(as_300, "spdx", "3.0.1").valid, False)
+        self.assertIs(validate_sbom_data(as_301, "spdx", "3.0.1").valid, True)
+        self.assertIs(validate_sbom_data(as_301, "spdx", "3.0.0").valid, False)
+
+
+class TestAnUnknownSPDX3VersionFails(unittest.TestCase):
+    """A skip is how every SPDX 3 document reached the upload unchecked.
+
+    Refusing means a version nobody has bundled yet is a loud failure rather
+    than a silent pass, which is the safer default for a format still adding
+    versions.
+    """
+
+    def test_it_fails_rather_than_skipping(self):
+        result = validate_sbom_data({"@graph": []}, "spdx", "3.1.0")
+
+        self.assertIs(result.valid, False, "a skip reports valid=None, which is not a rejection")
+
+    def test_the_message_names_what_is_supported(self):
+        result = validate_sbom_data({"@graph": []}, "spdx", "3.1.0")
+
+        self.assertIn("3.0.0", result.error_message)
+        self.assertIn("3.0.1", result.error_message)
+
+    def test_an_unbundled_spdx_2_version_still_only_skips(self):
+        """2.1 predates every reader here and nothing claims to check it, so
+        this deliberately keeps the old behaviour."""
+        result = validate_sbom_data({"spdxVersion": "SPDX-2.1"}, "spdx", "2.1")
+
+        self.assertIsNone(result.valid)
+
+
 if __name__ == "__main__":
     unittest.main()
