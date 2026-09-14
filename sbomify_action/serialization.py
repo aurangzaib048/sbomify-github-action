@@ -1339,6 +1339,19 @@ def sanitize_spdx_licenses(data: dict[str, Any]) -> int:
                 count += 1
         return count
 
+    # An SPDX 3 document has none of the keys below: it states a licence as a
+    # Relationship to a simplelicensing_LicenseExpression element in @graph.
+    # Walked the 2.x way it reports zero repairs having looked at nothing,
+    # which reads as "nothing to fix" on every call site.
+    for element in data.get("@graph", []):
+        if not isinstance(element, dict) or element.get("type") != "simplelicensing_LicenseExpression":
+            continue
+        sanitized_count += _sanitize_license_field(
+            element,
+            "simplelicensing_licenseExpression",
+            component=element.get("spdxId") or element.get("@id"),
+        )
+
     # Process packages
     for package in data.get("packages", []):
         pkg_name = package.get("name")

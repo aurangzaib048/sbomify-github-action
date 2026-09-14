@@ -1,7 +1,9 @@
 """Tests for the serialization module, including dependency graph sanitization."""
 
+import contextlib
 import copy
 import json
+from pathlib import Path
 
 import pytest
 from cyclonedx.model import BomRef
@@ -2524,3 +2526,93 @@ class TestSanitizeCycloneDXLicenses:
         }
         count = sanitize_cyclonedx_licenses(data)
         assert count == 1
+
+
+class TestSanitizeSpdx3Licenses:
+    """An SPDX 3 document has no `packages[]`, `files[]` or `snippets[]`.
+
+    It states a licence as a Relationship to a
+    `simplelicensing_LicenseExpression` element in `@graph`, so walked the 2.x
+    way this function returned 0 having looked at nothing. Zero reads as
+    "nothing to fix" at both call sites: on ingest for any SPDX input, and
+    before validating generated SPDX.
+    """
+
+    YOCTO = Path("/Users/ranaaurangzaib/PycharmProjects/sbomify/.qa-tmp/yocto")
+
+    @staticmethod
+    def _document(*expressions: str) -> dict:
+        return {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [
+                {
+                    "type": "simplelicensing_LicenseExpression",
+                    "spdxId": f"urn:lic:{index}",
+                    "simplelicensing_licenseExpression": expression,
+                }
+                for index, expression in enumerate(expressions)
+            ],
+        }
+
+    @staticmethod
+    def _expressions(document: dict) -> list[str]:
+        return [e["simplelicensing_licenseExpression"] for e in document["@graph"]]
+
+    @pytest.mark.parametrize("invalid", ["GPLv2+", "ASL 2.0", "Public Domain", "BSD-like"])
+    def test_an_invalid_expression_is_repaired(self, invalid):
+        document = self._document(invalid)
+
+        assert sanitize_spdx_licenses(document) == 1
+        assert self._expressions(document)[0].startswith("LicenseRef-")
+
+    def test_a_valid_expression_is_left_alone(self):
+        document = self._document("MIT", "Apache-2.0 AND MIT")
+
+        assert sanitize_spdx_licenses(document) == 0
+        assert self._expressions(document) == ["MIT", "Apache-2.0 AND MIT"]
+
+    def test_only_the_invalid_one_moves(self):
+        document = self._document("MIT", "GPLv2+", "Apache-2.0")
+
+        assert sanitize_spdx_licenses(document) == 1
+        assert self._expressions(document)[0::2] == ["MIT", "Apache-2.0"]
+
+    def test_other_element_types_are_not_touched(self):
+        """Only the licensing elements carry an expression to repair."""
+        document = self._document("MIT")
+        document["@graph"].append(
+            {"type": "software_Package", "spdxId": "urn:pkg", "simplelicensing_licenseExpression": "GPLv2+"}
+        )
+
+        assert sanitize_spdx_licenses(document) == 0
+
+    def test_spdx2_still_works(self):
+        """The SPDX 3 walk is additive; nothing about the 2.x path changed."""
+        data = {"spdxVersion": "SPDX-2.3", "packages": [{"name": "p", "licenseDeclared": "GPLv2+"}]}
+
+        assert sanitize_spdx_licenses(data) == 1
+        assert data["packages"][0]["licenseDeclared"].startswith("LicenseRef-")
+
+    @pytest.mark.skipif(not YOCTO.is_dir(), reason="published Yocto SBOMs not present")
+    def test_the_real_yocto_documents_do_not_move(self):
+        """The issue says RPM-style strings matter most for the Yocto path.
+        They do not appear there: Yocto normalises licences itself, and all
+        200 expressions across the three published SPDX 3 images are already
+        valid. This is the guard that a future change to the sanitizer does
+        not start rewriting somebody's correct licences."""
+        for path in sorted(self.YOCTO.glob("yocto-*.spdx.json")):
+            document = json.loads(path.read_text())
+            before = json.dumps(document, sort_keys=True)
+
+            with subtests_or_context(path.name):
+                assert sanitize_spdx_licenses(document) == 0
+                assert json.dumps(document, sort_keys=True) == before
+
+
+@contextlib.contextmanager
+def subtests_or_context(label: str):
+    """Name the fixture in a failure without depending on pytest-subtests."""
+    try:
+        yield
+    except AssertionError as error:  # pragma: no cover - only on failure
+        raise AssertionError(f"{label}: {error}") from error
