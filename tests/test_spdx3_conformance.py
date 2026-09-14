@@ -184,3 +184,113 @@ class TestADeclaredDataLicense:
         assert document["dataLicense"] == self.LICENSE
         assert "dataLicense" not in document["creationInfo"]
         assert _errors(validator, result) == []
+
+
+class TestTheSpecVersionSurvives:
+    """SPDX 3.0 shipped 2024-04 and 3.0.1 in 2024-12. Both are in the wild:
+    syft, Microsoft sbom-tool, JFrog Xray and Zephyr all emit 3.0.
+
+    The writer hardcoded a 3.0.1 @context and none of its eight call sites
+    overrode it, so a 3.0 input came back labelled 3.0.1 in the @context while
+    its creationInfo still read 3.0.0. CycloneDX already reads the output spec
+    version off the input document.
+    """
+
+    def _as_300(self) -> dict:
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
+        for element in source["@graph"]:
+            if element.get("type") == "CreationInfo":
+                element["specVersion"] = "3.0.0"
+        return source
+
+    def _write(self, source: dict, tmp_path: Path) -> dict:
+        out = tmp_path / "out.json"
+        write_spdx3_file(parse_spdx3_data(source), str(out))
+        return json.loads(out.read_text())
+
+    def test_a_300_input_stays_300(self, tmp_path):
+        result = self._write(self._as_300(), tmp_path)
+
+        assert result["@context"] == "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
+
+    def test_the_context_and_the_spec_version_agree(self, tmp_path):
+        """Relabelling one and not the other is worse than either alone."""
+        result = self._write(self._as_300(), tmp_path)
+
+        assert _creation_infos(result)[0]["specVersion"] == "3.0.0"
+
+    def test_a_301_input_stays_301(self, tmp_path):
+        result = self._write(json.loads(FIXTURE.read_text()), tmp_path)
+
+        assert result["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+    def test_a_document_built_from_nothing_is_301(self, tmp_path):
+        """Nothing to preserve, so write the current release."""
+        from sbomify_action.spdx3 import Spdx3Payload
+
+        out = tmp_path / "out.json"
+        write_spdx3_file(Spdx3Payload(), str(out))
+
+        assert json.loads(out.read_text())["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+    def test_an_explicit_argument_still_wins(self, tmp_path):
+        out = tmp_path / "out.json"
+        pinned = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+        write_spdx3_file(parse_spdx3_data(self._as_300()), str(out), context_url=pinned)
+
+        assert json.loads(out.read_text())["@context"] == pinned
+
+
+class TestPurposesTheLibraryHasNotHeardOf:
+    """spdx-tools 0.8.5 carries the pre-3.0.1 SoftwarePurpose enum.
+
+    It has neither `specification` nor `filesystemImage`, both of which 3.0.1
+    defines and Yocto emits. Measured on the published 6.0.3 core-image-minimal
+    SBOM, which validates clean: a round-trip dropped primaryPurpose from 38
+    packages, `filesystemImage` among them. That one is the image itself.
+
+    A value the producer wrote and the schema accepts does not get dropped
+    because a library is a version behind.
+    """
+
+    def _package(self, source: dict) -> dict:
+        return [e for e in source["@graph"] if e.get("type") == "software_Package"][0]
+
+    def _round_trip(self, purpose: str, tmp_path: Path, key: str = "software_primaryPurpose") -> dict:
+        source = json.loads(FIXTURE.read_text())
+        self._package(source)[key] = purpose
+        out = tmp_path / "out.json"
+        write_spdx3_file(parse_spdx3_data(source), str(out))
+        return json.loads(out.read_text())
+
+    @pytest.mark.parametrize("purpose", ["specification", "filesystemImage"])
+    def test_a_3_0_1_purpose_survives(self, purpose, tmp_path, validator):
+        result = self._round_trip(purpose, tmp_path)
+
+        assert _elements(result, "software_Package")[0]["software_primaryPurpose"] == purpose
+        assert _errors(validator, result) == []
+
+    @pytest.mark.parametrize("purpose", ["library", "source", "install", "archive", "patch"])
+    def test_a_purpose_the_library_knows_still_survives(self, purpose, tmp_path):
+        result = self._round_trip(purpose, tmp_path)
+
+        assert _elements(result, "software_Package")[0]["software_primaryPurpose"] == purpose
+
+    def test_additional_purposes_survive_too(self, tmp_path, validator):
+        """Same enum, same gap, and it takes a list."""
+        result = self._round_trip("specification", tmp_path, key="software_additionalPurpose")
+        package = _elements(result, "software_Package")[0]
+
+        assert package["software_additionalPurpose"] == ["specification"]
+        assert _errors(validator, result) == []
+
+    def test_a_package_without_a_purpose_is_not_given_one(self, tmp_path):
+        source = json.loads(FIXTURE.read_text())
+        out = tmp_path / "out.json"
+
+        write_spdx3_file(parse_spdx3_data(source), str(out))
+        package = _elements(json.loads(out.read_text()), "software_Package")[0]
+
+        assert "software_primaryPurpose" not in package

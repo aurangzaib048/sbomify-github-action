@@ -85,6 +85,18 @@ class Spdx3Payload(Payload):  # type: ignore[misc]
         # of being dropped on the floor.
         self.document_data_license: str | None = None
         self.document_profile_conformance: list[str] = []
+        # The @context the input declared. 3.0 and 3.0.1 are both in the wild
+        # (syft, Microsoft sbom-tool, JFrog Xray and Zephyr emit 3.0), and
+        # relabelling one as the other leaves the context disagreeing with the
+        # creationInfo's specVersion, which no producer wrote and no consumer
+        # can resolve.
+        self.context_url: str | None = None
+        # Purposes 3.0.1 defines and spdx-tools 0.8.5 does not, keyed by
+        # spdxId. The draft enum has no `specification` and no
+        # `filesystemImage`, both of which Yocto emits, and a typed field
+        # cannot hold a string it does not know, so the raw values ride here
+        # rather than being dropped.
+        self.unmodelled_purposes: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +416,7 @@ def _parse_software_artifact_fields(elem: dict[str, Any], fields: dict[str, Any]
         if pp_key in _SW_PURPOSES:
             fields["primary_purpose"] = _SW_PURPOSES[pp_key]
         else:
-            logger.warning("Unrecognized primaryPurpose value %r; omitting", pp)
+            logger.debug("primaryPurpose %r is not in the library's enum; keeping the raw value", pp)
 
     # Additional purposes
     aps = _get_sw(elem, "additionalPurpose") or []
@@ -493,6 +505,36 @@ def _parse_spdx_document(elem: dict[str, Any], ci_map: dict[str, CreationInfo] |
         fields["name"] = "unknown"
 
     return SpdxDocument(**fields)
+
+
+def _capture_unmodelled_purposes(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
+    """Keep purpose values the library's enum predates.
+
+    spdx-tools 0.8.5 models a pre-3.0.1 SoftwarePurpose, so a value the
+    producer wrote and the schema accepts would otherwise be logged and
+    dropped. Measured on the published Yocto 6.0.3 image SBOM: 38 packages
+    lost their primaryPurpose, the image itself among them.
+    """
+    spdx_id = elem.get("@id") or elem.get("spdxId")
+    if not isinstance(spdx_id, str) or not spdx_id:
+        return
+
+    kept: dict[str, Any] = {}
+
+    primary = _get_sw(elem, "primaryPurpose")
+    if isinstance(primary, str) and primary.lower() not in _SW_PURPOSES:
+        kept["software_primaryPurpose"] = primary
+
+    additional = _get_sw(elem, "additionalPurpose") or []
+    if isinstance(additional, str):
+        additional = [additional]
+    if isinstance(additional, list):
+        unknown = [a for a in additional if isinstance(a, str) and a.lower() not in _SW_PURPOSES]
+        if unknown:
+            kept["software_additionalPurpose"] = unknown
+
+    if kept:
+        payload.unmodelled_purposes[spdx_id] = kept
 
 
 def _capture_document_fields(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
@@ -601,6 +643,9 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
 
     # Second pass: parse all other elements
     payload = Spdx3Payload()
+    context = data.get("@context")
+    if isinstance(context, str) and _SPDX3_CONTEXT_RE.search(context):
+        payload.context_url = context
 
     for elem in graph:
         if not isinstance(elem, dict):
@@ -616,8 +661,10 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
                 _capture_document_fields(payload, elem)
             elif elem_type == "Package":
                 payload.add_element(_parse_package(elem, ci_map))
+                _capture_unmodelled_purposes(payload, elem)
             elif elem_type == "File":
                 payload.add_element(_parse_file(elem, ci_map))
+                _capture_unmodelled_purposes(payload, elem)
             elif elem_type == "Organization":
                 payload.add_element(_parse_agent(elem, Organization, ci_map))
             elif elem_type == "Person":
@@ -758,6 +805,17 @@ def _normalize_passthrough_element(elem: dict[str, Any]) -> None:
                     _normalize_nested_dict(item)
 
 
+def _restore_unmodelled_purposes(payload: Payload, element_list: list[dict[str, Any]]) -> None:
+    """Put back the purposes the library's enum could not hold."""
+    if not isinstance(payload, Spdx3Payload) or not payload.unmodelled_purposes:
+        return
+    for elem in element_list:
+        spdx_id = elem.get("spdxId") or elem.get("@id")
+        kept = payload.unmodelled_purposes.get(spdx_id) if isinstance(spdx_id, str) else None
+        if kept:
+            elem.update(kept)
+
+
 def _restore_document_fields(payload: Payload, element_list: list[dict[str, Any]]) -> None:
     """Write dataLicense and profileConformance onto the SpdxDocument.
 
@@ -781,18 +839,23 @@ def _restore_document_fields(payload: Payload, element_list: list[dict[str, Any]
 def write_spdx3_file(
     payload: Payload,
     file_path: str,
-    context_url: str = SPDX3_CONTEXT_URL,
+    context_url: str | None = None,
 ) -> None:
     """Write a :class:`Payload` to a JSON-LD ``.json`` file.
 
     Uses ``spdx_tools``' converter to serialize model objects, then wraps
-    them with the official ``@context`` URL.
+    them with a ``@context``.
 
     Args:
         payload: The SPDX 3 payload to write.
         file_path: Output file path (will be overwritten).
-        context_url: JSON-LD ``@context`` URL.
+        context_url: JSON-LD ``@context`` URL. Defaults to the one the input
+            document declared, so a 3.0 document is not relabelled 3.0.1, and
+            to the current release for a document built from nothing.
     """
+    if context_url is None:
+        context_url = getattr(payload, "context_url", None) or SPDX3_CONTEXT_URL
+
     element_list = convert_payload_to_json_ld_list_of_elements(payload)
 
     # Post-process serialized elements to fix spdx_tools converter output:
@@ -814,6 +877,7 @@ def write_spdx3_file(
             _normalize_passthrough_element(elem)
         element_list.extend(passthrough_copy)
 
+    _restore_unmodelled_purposes(payload, element_list)
     _restore_document_fields(payload, element_list)
 
     complete_dict = {"@context": context_url, "@graph": element_list}
