@@ -1059,6 +1059,30 @@ _LICENSE_SET_JOINERS = {
 _ACTION_AGENT_ID = "https://sbomify.com/agents/sbomify-action"
 
 
+def _binds_looser_than(text: str, joiner: str) -> bool:
+    """Whether *text* carries an operator outside parentheses that is not *joiner*.
+
+    SPDX binds AND tighter than OR, so joining members without parentheses
+    silently re-reads the expression: a disjunction inside a conjunction comes
+    back as "MIT OR Apache-2.0 AND GPL-2.0-only", which grants MIT on its own
+    and is a different licence claim from the one the producer wrote.
+
+    Depth-aware because a member may already be parenthesised, and
+    space-delimited because an SPDX id cannot contain a space.
+    """
+    depth = 0
+    for index, character in enumerate(text):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif depth == 0:
+            for operator in _LICENSE_SET_JOINERS.values():
+                if operator != joiner and text.startswith(operator, index):
+                    return True
+    return False
+
+
 def _license_expression_text(value: Any) -> str | None:
     """The expression a serialized spdx-tools licence object denotes.
 
@@ -1076,7 +1100,14 @@ def _license_expression_text(value: Any) -> str | None:
         members = value.get("member") or value.get("members") or []
         if isinstance(members, (str, dict)):
             members = [members]
-        kept = [text for text in (_license_expression_text(m) for m in members) if text]
+        kept = []
+        for member in members:
+            text = _license_expression_text(member)
+            if not text:
+                continue
+            if _binds_looser_than(text, joiner):
+                text = f"({text})"
+            kept.append(text)
         return joiner.join(kept) if kept else None
     if ltype in ("NoAssertionLicense", "NoneLicense"):
         return None
