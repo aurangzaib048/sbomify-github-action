@@ -350,6 +350,93 @@ class TestRelationshipTypesSurvive:
         ]
 
 
+class TestANestedLicenceSetKeepsItsMeaning:
+    """SPDX binds AND tighter than OR, so joining set members without
+    parentheses re-reads the expression rather than writing it out. A
+    disjunction inside a conjunction came back granting one of its members on
+    its own, which is a different licence claim from the one the producer made.
+    """
+
+    @staticmethod
+    def _listed(identifier: str) -> dict:
+        return {"type": "ListedLicense", "licenseId": identifier}
+
+    def test_a_disjunction_inside_a_conjunction_is_parenthesised(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "ConjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "DisjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+    def test_a_conjunction_inside_a_disjunction_is_parenthesised(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "DisjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "ConjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "(MIT AND Apache-2.0) OR GPL-2.0-only"
+
+    def test_the_same_operator_stays_flat(self):
+        """AND is associative, so parenthesising there would only add noise."""
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "ConjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "ConjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "MIT AND Apache-2.0 AND GPL-2.0-only"
+
+    def test_a_member_that_is_already_an_expression_string_is_read_the_same_way(self):
+        """spdx3_license_from_string parks a verbatim expression on a licence
+        object, so a member can carry an operator without being a set."""
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {"type": "ConjunctiveLicenseSet", "member": ["MIT OR Apache-2.0", "GPL-2.0-only"]}
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+    def test_a_member_that_is_already_parenthesised_is_not_wrapped_twice(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {"type": "ConjunctiveLicenseSet", "member": ["(MIT OR Apache-2.0)", "GPL-2.0-only"]}
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+
 class TestLicencesAreRelationshipsNotProperties:
     """3.0.1 has no declaredLicense or concludedLicense property: a licence is
     a Relationship to a licensing element. spdx-tools still models both as
