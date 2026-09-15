@@ -1828,6 +1828,13 @@ def augment_spdx3_sbom(
             # Overriding means one declared licence, not two that disagree.
             for relationship in stated:
                 payload.get_full_map().pop(relationship.spdx_id, None)
+                # And out of the document's own inventory. A document that
+                # lists its elements is asserting what it contains, so leaving
+                # the id there would have it claim an element the graph no
+                # longer holds, which no reader can resolve and no schema
+                # catches: JSON Schema cannot follow a cross-reference.
+                if doc and relationship.spdx_id in doc.element:
+                    doc.element.remove(relationship.spdx_id)
             root_pkg.declared_license = spdx3_licenses_from_list(license_ids)
             logger.info(f"Set license(s): {', '.join(license_ids)}")
 
