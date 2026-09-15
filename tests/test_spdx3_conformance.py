@@ -702,6 +702,37 @@ class TestWhatTheProducerWroteSurvivesTheRoundTrip:
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
+    def test_a_context_the_version_regex_cannot_read_is_not_preserved(self, tmp_path, validator):
+        """Preserving a context this module cannot read a version off leaves
+        nothing to align what the action mints to, and the schemas pin
+        @context to a fully qualified URL, so the result validated against
+        neither."""
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = "https://spdx.org/rdf/3.0/spdx-context.jsonld"
+
+        written = _write(source, tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+        assert _errors(validator, written) == []
+
+    def test_two_runs_stating_a_licence_produce_the_same_bytes(self, tmp_path):
+        """The elements a draft licence field turns into were named with a
+        fresh uuid4 each write, so a document rewritten with no change to its
+        licences still came back with a diff to read and discard."""
+        written = []
+        for name in ("a", "b"):
+            payload = parse_spdx3_data(json.loads(FIXTURE.read_text()))
+            package = next(e for e in payload.get_full_map().values() if isinstance(e, Package))
+            package.declared_license = spdx3_license_from_string("MIT")
+            (tmp_path / name).mkdir(parents=True, exist_ok=True)
+            out = tmp_path / name / "out.json"
+            write_spdx3_file(payload, str(out))
+            written.append(json.loads(out.read_text()))
+
+        minted = [e for e in written[0]["@graph"] if e.get("type") == "simplelicensing_LicenseExpression"]
+        assert minted
+        assert json.dumps(written[0], sort_keys=True) == json.dumps(written[1], sort_keys=True)
+
     def test_two_runs_over_one_input_produce_the_same_bytes(self, tmp_path):
         """The minted agent stamped the clock, so every rewrite differed by a
         line a user had to read and discard.

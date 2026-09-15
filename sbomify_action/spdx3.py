@@ -109,14 +109,19 @@ SPDX3_CONTEXT_URL = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 # Regex to detect spdx.org/rdf/3.x context
 _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 
+#: What a version looks like in a context URL. Both regexes below are built
+#: from it, because a context this module preserves and a version it cannot
+#: read off that same context is the disagreement it exists to prevent.
+_SPDX3_VERSION = r"\d+\.\d+\.\d+"
+
+# Regex to extract version from context URL
+_SPDX3_VERSION_RE = re.compile(rf"spdx\.org/rdf/({_SPDX3_VERSION})/")
+
 #: The one the schemas pin, with a ``const``. Anything else under
 #: ``spdx.org/rdf/3`` identifies a document as SPDX 3 without being a context
 #: the writer may echo back: ``spdx.org/rdf/3.0.1/terms/Core/`` is a terms
 #: IRI, and writing it as ``@context`` fails the schema it came from.
-_SPDX3_CONTEXT_URL_RE = re.compile(r"https?://spdx\.org/rdf/\d+\.\d+(?:\.\d+)?/spdx-context\.jsonld")
-
-# Regex to extract version from context URL
-_SPDX3_VERSION_RE = re.compile(r"spdx\.org/rdf/(\d+\.\d+\.\d+)/")
+_SPDX3_CONTEXT_URL_RE = re.compile(rf"https?://spdx\.org/rdf/{_SPDX3_VERSION}/spdx-context\.jsonld")
 
 # Map JSON-LD @type → model class
 _TYPE_ALIASES: dict[str, str] = {
@@ -1001,6 +1006,19 @@ def _license_expression_text(value: Any) -> str | None:
     return None
 
 
+def _minted_license_id(kind: str, subject: str, relationship_type: str, expression: str) -> str:
+    """A stable id for a licence element derived from a draft licence field.
+
+    A fresh uuid4 here made writing the same payload twice produce different
+    ids for the same assertion, so a document rewritten with no change to its
+    licences still came back with a diff to read and discard. What the element
+    says is what names it: same subject, same relationship, same expression,
+    same id.
+    """
+    seed = "\x1f".join((kind, subject, relationship_type, expression))
+    return f"urn:spdx.dev:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}"
+
+
 def _licenses_as_relationships(element_list: list[dict[str, Any]]) -> None:
     """Express the licence fields the way 3.0.1 does, as relationships.
 
@@ -1030,7 +1048,7 @@ def _licenses_as_relationships(element_list: list[dict[str, Any]]) -> None:
             # to null when that element has none: creationInfo is required on
             # every Element, and a null fails differently from an absence.
             provenance = {"creationInfo": elem["creationInfo"]} if elem.get("creationInfo") else {}
-            license_id = make_spdx3_spdx_id()
+            license_id = _minted_license_id("expression", subject, relationship_type, expression)
             added.append(
                 {
                     "type": "simplelicensing_LicenseExpression",
@@ -1042,7 +1060,7 @@ def _licenses_as_relationships(element_list: list[dict[str, Any]]) -> None:
             added.append(
                 {
                     "type": "Relationship",
-                    "spdxId": make_spdx3_spdx_id(),
+                    "spdxId": _minted_license_id("relationship", subject, relationship_type, expression),
                     **provenance,
                     "relationshipType": relationship_type,
                     "from": subject,
