@@ -50,9 +50,13 @@ SPDX_SCHEMAS = {
     "2.2": SPDX_SCHEMA_DIR / "spdx-2.2.schema.json",
     "2.3": SPDX_SCHEMA_DIR / "spdx-2.3.schema.json",
     # 3.0 and 3.0.1 are separate documents, not a version label on one. 3.0.1
-    # dropped IndividualElement and added six properties, so validating a 3.0
-    # document against the 3.0.1 schema is not the same check. Both are the
-    # official shacl2code output from spdx.org/schema/<version>/.
+    # added IndividualElement, and renamed SpdxDocument.imports to import,
+    # Build.build_parameters to build_parameter, and File.software_contentType
+    # to contentType. Renames are what make the two schemas disagree rather
+    # than merely differ: a File carrying software_contentType is valid under
+    # 3.0.0 and refused by 3.0.1, and one carrying contentType is refused by
+    # 3.0.0. tests/test_validation.py asserts all four cells. Both files are
+    # the official shacl2code output from spdx.org/schema/<version>/.
     "3.0.0": SPDX_SCHEMA_DIR / "spdx-3.0.0.schema.json",
     "3.0.1": SPDX_SCHEMA_DIR / "spdx-3.0.1.schema.json",
     # A document that names the 3.0 line and no patch number is held to that
