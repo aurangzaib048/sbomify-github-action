@@ -1470,6 +1470,7 @@ def _enrich_spdx3_sbom(input_path: Path, output_path: Path, enricher: Enricher) 
         make_spdx3_creation_info,
         make_spdx3_spdx_id,
         parse_spdx3_file,
+        spdx3_ids_stating_a_license,
         spdx3_license_from_string,
         write_spdx3_file,
     )
@@ -1488,6 +1489,10 @@ def _enrich_spdx3_sbom(input_path: Path, output_path: Path, enricher: Enricher) 
         return
 
     logger.info(f"Found {len(packages)} packages to enrich")
+
+    # Once, not once per package: asking per package walks the whole payload
+    # each time, which over a large document is packages times elements.
+    already_declared = spdx3_ids_stating_a_license(payload)
 
     spdx3_sources: Dict[str, int] = {}
     stats: Dict[str, Any] = {
@@ -1536,7 +1541,10 @@ def _enrich_spdx3_sbom(input_path: Path, output_path: Path, enricher: Enricher) 
                 added_fields.append("download_location")
 
         # License
-        if metadata.licenses and not package.declared_license:
+        # `declared_license` is unset on any package whose author stated a
+        # licence the 3.0.1 way, as a relationship, so it alone is not enough
+        # to tell an undeclared package from a declared one.
+        if metadata.licenses and not package.declared_license and package.spdx_id not in already_declared:
             # Use first license
             license_str = metadata.licenses[0] if metadata.licenses else None
             if license_str:

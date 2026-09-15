@@ -435,22 +435,14 @@ def create_empty_sbom(output_file: str, sbom_format: str, spec_version: str | No
 
 def _create_empty_spdx3(output_file: str) -> str:
     """Create a minimal valid empty SPDX 3 document."""
-    from datetime import datetime, timezone
 
-    from semantic_version import Version
-    from spdx_tools.spdx3.model import CreationInfo as Spdx3CreationInfo
-    from spdx_tools.spdx3.model import ProfileIdentifierType, SpdxDocument
+    from spdx_tools.spdx3.model import SpdxDocument
     from spdx_tools.spdx3.model import Tool as Spdx3Tool
     from spdx_tools.spdx3.payload import Payload
 
-    from .spdx3 import make_spdx3_spdx_id, write_spdx3_file
+    from .spdx3 import make_spdx3_creation_info, make_spdx3_spdx_id, write_spdx3_file
 
-    creation_info = Spdx3CreationInfo(
-        spec_version=Version("3.0.1"),
-        created=datetime.now(timezone.utc),
-        created_by=[],
-        profile=[ProfileIdentifierType.CORE, ProfileIdentifierType.SOFTWARE],
-    )
+    creation_info = make_spdx3_creation_info()
 
     tool_id = make_spdx3_spdx_id()
     tool = Spdx3Tool(spdx_id=tool_id, name="sbomify-action", creation_info=creation_info)

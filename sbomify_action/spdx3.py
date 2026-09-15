@@ -79,6 +79,25 @@ class Spdx3Payload(Payload):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__()
         self.passthrough_elements: list[dict[str, Any]] = []
+        # 3.0.1 moved dataLicense onto SpdxDocument and replaced CreationInfo's
+        # profile with Element.profileConformance. spdx-tools 0.8.5 models the
+        # pre-3.0.1 draft and has no slot for either, so they ride here instead
+        # of being dropped on the floor.
+        self.document_data_license: str | None = None
+        self.document_profile_conformance: list[str] = []
+        # The @context the input declared. 3.0 and 3.0.1 are both in the wild
+        # (syft, Microsoft sbom-tool, JFrog Xray and Zephyr emit 3.0), and
+        # relabelling one as the other leaves the context disagreeing with the
+        # creationInfo's specVersion, which no producer wrote and no consumer
+        # can resolve.
+        self.context_url: str | None = None
+        # Values 3.0.1 defines and spdx-tools 0.8.5 does not, keyed by spdxId
+        # and written back verbatim. A typed field cannot hold a string its
+        # enum does not know, so without this the purposes Yocto emits
+        # (`specification`, `filesystemImage`) are dropped and 37 of 3.0.1's
+        # 59 relationship types, both licence relationships included, come out
+        # as `other`.
+        self.kept_raw_fields: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +109,19 @@ SPDX3_CONTEXT_URL = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 # Regex to detect spdx.org/rdf/3.x context
 _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 
+#: What a version looks like in a context URL. Both regexes below are built
+#: from it, because a context this module preserves and a version it cannot
+#: read off that same context is the disagreement it exists to prevent.
+_SPDX3_VERSION = r"\d+\.\d+\.\d+"
+
 # Regex to extract version from context URL
-_SPDX3_VERSION_RE = re.compile(r"spdx\.org/rdf/(\d+\.\d+\.\d+)/")
+_SPDX3_VERSION_RE = re.compile(rf"spdx\.org/rdf/({_SPDX3_VERSION})/")
+
+#: The one the schemas pin, with a ``const``. Anything else under
+#: ``spdx.org/rdf/3`` identifies a document as SPDX 3 without being a context
+#: the writer may echo back: ``spdx.org/rdf/3.0.1/terms/Core/`` is a terms
+#: IRI, and writing it as ``@context`` fails the schema it came from.
+_SPDX3_CONTEXT_URL_RE = re.compile(rf"https?://spdx\.org/rdf/{_SPDX3_VERSION}/spdx-context\.jsonld")
 
 # Map JSON-LD @type → model class
 _TYPE_ALIASES: dict[str, str] = {
@@ -140,11 +170,14 @@ for _e in ExternalIdentifierType:
     _EXT_ID_TYPES[_s2c(_e.name).lower()] = _e
     _EXT_ID_TYPES[_e.name.lower()] = _e
 
-# Map RelationshipType
+# Map RelationshipType, and back again: the spelling a type is written with
+# is needed to tell an element's own relationships apart after parsing.
 _REL_TYPES: dict[str, RelationshipType] = {}
+_REL_TYPE_NAMES: dict[RelationshipType, str] = {}
 for _e in RelationshipType:
     _REL_TYPES[_s2c(_e.name).lower()] = _e
     _REL_TYPES[_e.name.lower()] = _e
+    _REL_TYPE_NAMES[_e] = _s2c(_e.name)
 
 # Map SoftwarePurpose
 _SW_PURPOSES: dict[str, SoftwarePurpose] = {}
@@ -398,7 +431,7 @@ def _parse_software_artifact_fields(elem: dict[str, Any], fields: dict[str, Any]
         if pp_key in _SW_PURPOSES:
             fields["primary_purpose"] = _SW_PURPOSES[pp_key]
         else:
-            logger.warning("Unrecognized primaryPurpose value %r; omitting", pp)
+            logger.debug("primaryPurpose %r is not in the library's enum; keeping the raw value", pp)
 
     # Additional purposes
     aps = _get_sw(elem, "additionalPurpose") or []
@@ -489,6 +522,114 @@ def _parse_spdx_document(elem: dict[str, Any], ci_map: dict[str, CreationInfo] |
     return SpdxDocument(**fields)
 
 
+def _keep(payload: "Spdx3Payload", elem: dict[str, Any], kept: dict[str, Any]) -> None:
+    """Stash raw fields to write back verbatim, keyed by the element's id."""
+    spdx_id = elem.get("@id") or elem.get("spdxId")
+    if kept and isinstance(spdx_id, str) and spdx_id:
+        payload.kept_raw_fields.setdefault(spdx_id, {}).update(kept)
+
+
+def _capture_unmodelled_relationship_type(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
+    """Keep a relationship type the library's enum predates.
+
+    spdx-tools 0.8.5 holds 62 relationship types and 37 of 3.0.1's 59 are not
+    among them, both licence relationships included. Its parser maps anything
+    it does not recognise to ``other``, which is itself a legal value, so the
+    rewritten document passes the schema while saying something different from
+    what the producer wrote: a package's declared licence, a static link and a
+    prerequisite all come back as an unspecified relationship to the same
+    target.
+    """
+    rel_type = elem.get("relationshipType")
+    if isinstance(rel_type, str) and rel_type and rel_type.lower() not in _REL_TYPES:
+        _keep(payload, elem, {"relationshipType": rel_type})
+
+
+def _capture_unmodelled_purposes(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
+    """Keep purpose values the library's enum predates.
+
+    spdx-tools 0.8.5 models a pre-3.0.1 SoftwarePurpose, so a value the
+    producer wrote and the schema accepts would otherwise be logged and
+    dropped. Measured on the published Yocto 6.0.3 image SBOM: 38 packages
+    lost their primaryPurpose, the image itself among them.
+    """
+    kept: dict[str, Any] = {}
+
+    primary = _get_sw(elem, "primaryPurpose")
+    if isinstance(primary, str) and primary.lower() not in _SW_PURPOSES:
+        kept["software_primaryPurpose"] = primary
+
+    additional = _get_sw(elem, "additionalPurpose") or []
+    if isinstance(additional, str):
+        additional = [additional]
+    if isinstance(additional, list):
+        unknown = [a for a in additional if isinstance(a, str) and a.lower() not in _SW_PURPOSES]
+        if unknown:
+            # The whole list, not just the strangers. Restoring is a plain
+            # overwrite of the serialized value, so keeping only the unknown
+            # ones dropped every purpose the library did understand:
+            # ["library", "specification"] came back as ["specification"].
+            kept["software_additionalPurpose"] = [a for a in additional if isinstance(a, str)]
+
+    _keep(payload, elem, kept)
+
+
+#: Where SPDX publishes the licence list. A bare id in the draft location means
+#: this licence; 3.0.1 just spells it as an IRI.
+_SPDX_LICENSE_BASE = "https://spdx.org/licenses/"
+
+
+def _as_license_iri(value: str) -> str:
+    """A licence the way 3.0.1 spells it.
+
+    The draft location holds a bare id, `"CC0-1.0"`, and `dataLicense` on
+    SpdxDocument resolves to a licence IRI. Writing the bare id back produced a
+    document that failed the schema, so carrying the value forward has to carry
+    its spelling forward too. A rewrite rather than an invention: the id and the
+    IRI name the same licence, and anything that already looks like an IRI is
+    left exactly as the producer wrote it.
+    """
+    stripped = value.strip()
+    if not stripped or "://" in stripped or stripped.startswith("urn:"):
+        return stripped
+    return _SPDX_LICENSE_BASE + stripped
+
+
+def _capture_document_fields(
+    payload: "Spdx3Payload", elem: dict[str, Any], raw_creation_infos: dict[str, dict[str, Any]] | None = None
+) -> None:
+    """Carry the two document-level fields the draft model cannot hold.
+
+    ``dataLicense`` is read from the SpdxDocument, which is where 3.0.1 puts
+    it, and from the CreationInfo as a fallback, which is where this repo's
+    older fixtures and spdx-tools both put it.
+    """
+    data_license = elem.get("dataLicense")
+    if not isinstance(data_license, str) or not data_license:
+        # The draft location, which this repo's older fixtures use. Read from
+        # the raw dict, never from the parsed CreationInfo: the model defaults
+        # data_license to "CC0-1.0", and writing that onto a document whose
+        # author declared none both invents a claim and fails the schema, which
+        # wants a licence IRI rather than a short identifier.
+        ci = elem.get("creationInfo")
+        # Either shape. JSON-LD lets a document inline its CreationInfo or
+        # point at a standalone one, and this repo's own fixtures point:
+        # "creationInfo": "_:creationinfo". Reading only the inline form meant
+        # a legacy dataLicense on the referenced element was stripped by the
+        # normalisation and never put back.
+        if isinstance(ci, str) and raw_creation_infos:
+            ci = raw_creation_infos.get(ci)
+        data_license = ci.get("dataLicense") if isinstance(ci, dict) else None
+    if isinstance(data_license, str) and data_license:
+        payload.document_data_license = _as_license_iri(data_license)
+
+    profiles = elem.get("profileConformance")
+    if isinstance(profiles, str):
+        profiles = [profiles]
+    if isinstance(profiles, list):
+        payload.document_profile_conformance = [p for p in profiles if isinstance(p, str)]
+
+
 def _parse_relationship(elem: dict[str, Any], ci_map: dict[str, CreationInfo] | None = None) -> Relationship:
     """Parse a Relationship element."""
     fields = _parse_common_fields(elem, ci_map)
@@ -543,6 +684,32 @@ def parse_spdx3_file(file_path: str) -> Spdx3Payload:
     return parse_spdx3_data(data)
 
 
+def _declared_context(context: Any) -> str | None:
+    """The SPDX 3 context URL a document declares, whatever shape it is in.
+
+    JSON-LD allows a string, a list or an object, and a document that wraps its
+    context in a list is as conformant as one that does not.
+
+    What comes back is written straight out as the ``@context`` of what the
+    action produces, so only the schema-pinned context URL counts. A document
+    can carry other ``spdx.org/rdf/3`` URLs, and echoing one of those back
+    would relabel a conformant input as something no schema accepts.
+    """
+    candidates: list[str]
+    if isinstance(context, str):
+        candidates = [context]
+    elif isinstance(context, list):
+        candidates = [c for c in context if isinstance(c, str)]
+    elif isinstance(context, dict):
+        candidates = [v for v in context.values() if isinstance(v, str)]
+    else:
+        return None
+    for candidate in candidates:
+        if _SPDX3_CONTEXT_URL_RE.fullmatch(candidate.strip()):
+            return candidate.strip()
+    return None
+
+
 def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
     """Parse SPDX 3 JSON-LD data (already loaded) into an :class:`Spdx3Payload`.
 
@@ -558,6 +725,10 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
     # First pass: collect CreationInfo elements keyed by IRI so that
     # elements referencing them via string can be resolved.
     ci_map: dict[str, CreationInfo] = {}
+    # The same elements unparsed, for the fields the draft model has no slot
+    # for: a document that references its CreationInfo rather than inlining it
+    # keeps its legacy dataLicense there, and the parsed object cannot carry it.
+    raw_creation_infos: dict[str, dict[str, Any]] = {}
     for elem in graph:
         if not isinstance(elem, dict):
             continue
@@ -566,9 +737,15 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
             ci_id = elem.get("@id") or elem.get("spdxId")
             if ci_id:
                 ci_map[ci_id] = _parse_creation_info(elem)
+                raw_creation_infos[ci_id] = elem
 
     # Second pass: parse all other elements
     payload = Spdx3Payload()
+    # Matching is_spdx3 and extract_spdx3_version, both of which read every
+    # shape JSON-LD allows here. Taking the string form alone left context_url
+    # None for a list or dict context, and the writer then fell back to the
+    # current release: the relabelling this is here to prevent.
+    payload.context_url = _declared_context(data.get("@context"))
 
     for elem in graph:
         if not isinstance(elem, dict):
@@ -581,10 +758,13 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
         try:
             if elem_type == "SpdxDocument":
                 payload.add_element(_parse_spdx_document(elem, ci_map))
+                _capture_document_fields(payload, elem, raw_creation_infos)
             elif elem_type == "Package":
                 payload.add_element(_parse_package(elem, ci_map))
+                _capture_unmodelled_purposes(payload, elem)
             elif elem_type == "File":
                 payload.add_element(_parse_file(elem, ci_map))
+                _capture_unmodelled_purposes(payload, elem)
             elif elem_type == "Organization":
                 payload.add_element(_parse_agent(elem, Organization, ci_map))
             elif elem_type == "Person":
@@ -595,6 +775,7 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
                 payload.add_element(_parse_agent(elem, SoftwareAgent, ci_map))
             elif elem_type == "Relationship":
                 payload.add_element(_parse_relationship(elem, ci_map))
+                _capture_unmodelled_relationship_type(payload, elem)
             elif elem_type == "CreationInfo":
                 # Already parsed in first pass; preserve standalone CreationInfo
                 # elements (those with @id) so passthrough elements referencing
@@ -649,6 +830,29 @@ def _normalize_serialized_element(elem: dict[str, Any]) -> None:
     if "standard" in elem:
         elem["standardName"] = elem.pop("standard")
 
+    # spdx_tools writes the draft spelling; 3.0.1 renamed the property, the
+    # class and the type field, and rejects the old names outright.
+    if "externalReference" in elem:
+        elem["externalRef"] = elem.pop("externalReference")
+
+    # An artifact has exactly one supplier in 3.0.1; originatedBy is the set.
+    # spdx-tools models both as lists, so a supplier the action worked out is
+    # written as a one-element array the schema refuses.
+    supplied_by = elem.get("suppliedBy")
+    if isinstance(supplied_by, list):
+        if len(supplied_by) > 1:
+            logger.warning(
+                "Element %s names %d suppliers; 3.0.1 allows one, keeping the first",
+                elem.get("spdxId") or elem.get("@id"),
+                len(supplied_by),
+            )
+        if supplied_by:
+            elem["suppliedBy"] = supplied_by[0]
+        else:
+            del elem["suppliedBy"]
+
+    _strip_draft_creation_info_fields(elem)
+
     # --- recurse into nested dicts / lists ---
     for value in elem.values():
         if isinstance(value, dict):
@@ -659,10 +863,30 @@ def _normalize_serialized_element(elem: dict[str, Any]) -> None:
                     _normalize_nested_dict(item)
 
 
+#: What 3.0.1 allows on a CreationInfo. ``dataLicense`` moved to SpdxDocument
+#: and ``profile`` became Element.profileConformance; spdx-tools 0.8.5 still
+#: emits both, and ``CreationInfo_props`` is ``unevaluatedProperties: false``,
+#: so either one invalidates every element carrying that CreationInfo.
+_CREATION_INFO_DRAFT_ONLY = ("dataLicense", "profile")
+
+
+def _strip_draft_creation_info_fields(d: dict[str, Any]) -> None:
+    """Drop the pre-3.0.1 CreationInfo keys, if this dict is one."""
+    if d.get("type") != "CreationInfo" and "specVersion" not in d:
+        return
+    for key in _CREATION_INFO_DRAFT_ONLY:
+        d.pop(key, None)
+
+
 def _normalize_nested_dict(d: dict[str, Any]) -> None:
     """Normalize ``@type`` → ``type`` in a nested dict (creationInfo, Hash, etc.)."""
     if "@type" in d:
         d["type"] = d.pop("@type")
+    if d.get("type") == "ExternalReference":
+        d["type"] = "ExternalRef"
+    if "externalReferenceType" in d:
+        d["externalRefType"] = d.pop("externalReferenceType")
+    _strip_draft_creation_info_fields(d)
     # Recurse for deeper nesting (e.g. ExternalIdentifier inside verifiedUsing)
     for value in d.values():
         if isinstance(value, dict):
@@ -687,6 +911,7 @@ def _normalize_passthrough_element(elem: dict[str, Any]) -> None:
         id_val = elem["@id"]
         if isinstance(id_val, str) and not id_val.startswith("_:"):
             elem["spdxId"] = elem.pop("@id")
+    _strip_draft_creation_info_fields(elem)
     # Recurse into nested dicts (e.g. inline creationInfo, externalIdentifier)
     for value in elem.values():
         if isinstance(value, dict):
@@ -697,21 +922,272 @@ def _normalize_passthrough_element(elem: dict[str, Any]) -> None:
                     _normalize_nested_dict(item)
 
 
+def _restore_kept_raw_fields(payload: Payload, element_list: list[dict[str, Any]]) -> None:
+    """Put back every value the library's enums could not hold."""
+    if not isinstance(payload, Spdx3Payload) or not payload.kept_raw_fields:
+        return
+    for elem in element_list:
+        spdx_id = elem.get("spdxId") or elem.get("@id")
+        kept = payload.kept_raw_fields.get(spdx_id) if isinstance(spdx_id, str) else None
+        if kept:
+            elem.update(kept)
+
+
+def _restore_document_fields(payload: Payload, element_list: list[dict[str, Any]]) -> None:
+    """Write dataLicense and profileConformance onto the SpdxDocument.
+
+    3.0.1 puts both there; the draft model spdx-tools 0.8.5 implements has no
+    slot for either, so the parser stashed them on the payload. A document
+    that declared no profileConformance does not gain one: claiming a profile
+    asserts that every contained element meets its restrictions.
+    """
+    if not isinstance(payload, Spdx3Payload):
+        return
+    for elem in element_list:
+        if elem.get("type") != "SpdxDocument":
+            continue
+        if payload.document_data_license:
+            elem["dataLicense"] = payload.document_data_license
+        if payload.document_profile_conformance:
+            elem["profileConformance"] = list(payload.document_profile_conformance)
+        return
+
+
+#: The pre-3.0.1 licence fields spdx-tools 0.8.5 still models, and the
+#: relationship type 3.0.1 expresses each of them as.
+_DRAFT_LICENSE_FIELDS = {
+    "declaredLicense": "hasDeclaredLicense",
+    "concludedLicense": "hasConcludedLicense",
+}
+
+#: How a licence set composes its members into one expression string.
+_LICENSE_SET_JOINERS = {
+    "ConjunctiveLicenseSet": " AND ",
+    "DisjunctiveLicenseSet": " OR ",
+}
+
+#: The agent the action names as the creator of elements it mints itself.
+#: Stable, so two runs over the same input produce the same identifier rather
+#: than a fresh uuid on every diff.
+_ACTION_AGENT_ID = "https://sbomify.com/agents/sbomify-action"
+
+
+def _license_expression_text(value: Any) -> str | None:
+    """The expression a serialized spdx-tools licence object denotes.
+
+    ``None`` for NoAssertion and None: a relationship pointing at nothing
+    asserts less than no relationship at all, and the reader treats both the
+    same way.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict):
+        return None
+    ltype = value.get("type") or value.get("@type") or ""
+    joiner = _LICENSE_SET_JOINERS.get(ltype)
+    if joiner is not None:
+        members = value.get("member") or value.get("members") or []
+        if isinstance(members, (str, dict)):
+            members = [members]
+        kept = [text for text in (_license_expression_text(m) for m in members) if text]
+        return joiner.join(kept) if kept else None
+    if ltype in ("NoAssertionLicense", "NoneLicense"):
+        return None
+    # licenseName before licenseId: the only objects that reach here are the
+    # ones spdx3_license_from_string builds, and for anything that is not a
+    # bare identifier it puts the verbatim expression in the name and a
+    # synthesised "LicenseRef-MIT-OR-Apache-2.0" in the id. The library has no
+    # LicenseExpression class to hold an expression properly, so reading the
+    # id would publish that placeholder as the licence.
+    for key in ("simplelicensing_licenseExpression", "licenseExpression", "licenseName", "licenseId"):
+        text = value.get(key)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return None
+
+
+def _minted_license_id(kind: str, subject: str, relationship_type: str, expression: str) -> str:
+    """A stable id for a licence element derived from a draft licence field.
+
+    A fresh uuid4 here made writing the same payload twice produce different
+    ids for the same assertion, so a document rewritten with no change to its
+    licences still came back with a diff to read and discard. What the element
+    says is what names it: same subject, same relationship, same expression,
+    same id.
+    """
+    seed = "\x1f".join((kind, subject, relationship_type, expression))
+    return f"urn:spdx.dev:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}"
+
+
+def _licenses_as_relationships(element_list: list[dict[str, Any]]) -> None:
+    """Express the licence fields the way 3.0.1 does, as relationships.
+
+    3.0.1 has no ``declaredLicense`` or ``concludedLicense`` property: it
+    states a licence as a Relationship from the artifact to a licensing
+    element. spdx-tools 0.8.5 still models both as fields, and every
+    properties block is ``unevaluatedProperties: false``, so one of them
+    invalidates the whole package.
+
+    Being invalid is the smaller half. Left as a field, the licence is also
+    unreadable: a reader that follows the spec, sbomify's own included, looks
+    for the relationship and finds nothing, so the licence the action just
+    worked out is one nobody downstream can see.
+    """
+    document = next((e for e in element_list if e.get("type") == "SpdxDocument"), None)
+    added: list[dict[str, Any]] = []
+    for elem in element_list:
+        for field, relationship_type in _DRAFT_LICENSE_FIELDS.items():
+            if field not in elem:
+                continue
+            expression = _license_expression_text(elem.pop(field))
+            subject = elem.get("spdxId") or elem.get("@id")
+            if not expression or not isinstance(subject, str):
+                continue
+            # Same provenance as the element being described, so this adds no
+            # CreationInfo of its own to account for. Omitted rather than set
+            # to null when that element has none: creationInfo is required on
+            # every Element, and a null fails differently from an absence.
+            provenance = {"creationInfo": elem["creationInfo"]} if elem.get("creationInfo") else {}
+            license_id = _minted_license_id("expression", subject, relationship_type, expression)
+            added.append(
+                {
+                    "type": "simplelicensing_LicenseExpression",
+                    "spdxId": license_id,
+                    **provenance,
+                    "simplelicensing_licenseExpression": expression,
+                }
+            )
+            added.append(
+                {
+                    "type": "Relationship",
+                    "spdxId": _minted_license_id("relationship", subject, relationship_type, expression),
+                    **provenance,
+                    "relationshipType": relationship_type,
+                    "from": subject,
+                    "to": [license_id],
+                }
+            )
+    if not added:
+        return
+    element_list.extend(added)
+    # Only when the document already lists its elements: a document that did
+    # not carry the key was not making that claim, and gaining it here would
+    # assert a completeness nobody wrote.
+    if document and isinstance(document.get("element"), list):
+        document["element"].extend(e["spdxId"] for e in added)
+
+
+def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
+    """Every CreationInfo reachable from *node*, standalone or inline."""
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if node.get("type") == "CreationInfo" or "specVersion" in node:
+            found.append(node)
+        for value in node.values():
+            found.extend(_creation_infos_in(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_creation_infos_in(item))
+    return found
+
+
+def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url: str | None) -> None:
+    """Make what the action mints declare the document's own spec version.
+
+    :func:`make_spdx3_creation_info` hardcodes 3.0.1 because it has no document
+    to ask. Since the writer preserves the ``@context`` the input declared, a
+    3.0 document came back carrying 3.0.1 on every element the action added:
+    the context and specVersion disagreement this module exists to prevent,
+    walking back in through the minting path.
+
+    Only the ones the action minted are touched, and they are identifiable
+    precisely because make_spdx3_creation_info names the action as their
+    creator. A CreationInfo the producer wrote keeps whatever it says.
+    """
+    if not context_url:
+        return
+    match = _SPDX3_VERSION_RE.search(context_url)
+    if not match:
+        return
+    declared = match.group(1)
+    for creation_info in _creation_infos_in(element_list):
+        if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
+            creation_info["specVersion"] = declared
+
+
+def _add_the_action_agent(element_list: list[dict[str, Any]]) -> None:
+    """Put the agent in the graph, if anything the action minted names it.
+
+    ``CreationInfo_props`` requires createdBy with ``minItems: 1``, so an
+    element the action adds with no creator named fails outright, and
+    augmentation and enrichment add a Tool, an Organization and a Person each.
+    :func:`make_spdx3_creation_info` names this agent; without the element
+    itself in the graph the reference dangles.
+
+    The agent is a SoftwareAgent rather than a Tool because 3.0.1 is strict
+    about it: createdBy takes an Agent, and Tool is not one. Its own
+    CreationInfo names itself, which is the bootstrap the spec's own examples
+    use.
+
+    A CreationInfo that arrived without a createdBy is left as it arrived.
+    The action does not know who created that element, and naming itself
+    there would state provenance nobody wrote.
+    """
+    naming = [ci for ci in _creation_infos_in(element_list) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
+    if not naming or any(e.get("spdxId") == _ACTION_AGENT_ID for e in element_list):
+        return
+    # Both taken from a CreationInfo that names the agent, so it declares
+    # neither a different spec version nor a different moment from the
+    # elements it is named on.
+    #
+    # The timestamp especially: minting one here made two runs over the same
+    # input differ by a line, which is a diff a user has to read and discard
+    # every time. The agent describes elements that were created at the
+    # document's own moment, so that is the honest value as well as the stable
+    # one. Only a document that states no time at all falls back to now.
+    spec_version = next(
+        (ci["specVersion"] for ci in naming if isinstance(ci.get("specVersion"), str)),
+        "3.0.1",
+    )
+    created = next(
+        (ci["created"] for ci in naming if isinstance(ci.get("created"), str) and ci["created"]),
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    element_list.append(
+        {
+            "type": "SoftwareAgent",
+            "spdxId": _ACTION_AGENT_ID,
+            "name": "sbomify-action",
+            "creationInfo": {
+                "type": "CreationInfo",
+                "specVersion": spec_version,
+                "created": created,
+                "createdBy": [_ACTION_AGENT_ID],
+            },
+        }
+    )
+
+
 def write_spdx3_file(
     payload: Payload,
     file_path: str,
-    context_url: str = SPDX3_CONTEXT_URL,
+    context_url: str | None = None,
 ) -> None:
     """Write a :class:`Payload` to a JSON-LD ``.json`` file.
 
     Uses ``spdx_tools``' converter to serialize model objects, then wraps
-    them with the official ``@context`` URL.
+    them with a ``@context``.
 
     Args:
         payload: The SPDX 3 payload to write.
         file_path: Output file path (will be overwritten).
-        context_url: JSON-LD ``@context`` URL.
+        context_url: JSON-LD ``@context`` URL. Defaults to the one the input
+            document declared, so a 3.0 document is not relabelled 3.0.1, and
+            to the current release for a document built from nothing.
     """
+    if context_url is None:
+        context_url = getattr(payload, "context_url", None) or SPDX3_CONTEXT_URL
+
     element_list = convert_payload_to_json_ld_list_of_elements(payload)
 
     # Post-process serialized elements to fix spdx_tools converter output:
@@ -732,6 +1208,13 @@ def write_spdx3_file(
         for elem in passthrough_copy:
             _normalize_passthrough_element(elem)
         element_list.extend(passthrough_copy)
+
+    _restore_kept_raw_fields(payload, element_list)
+    _restore_document_fields(payload, element_list)
+    _licenses_as_relationships(element_list)
+    _add_the_action_agent(element_list)
+    # After the agent, so the one it mints for itself is aligned too.
+    _align_minted_spec_versions(element_list, context_url)
 
     complete_dict = {"@context": context_url, "@graph": element_list}
 
@@ -782,6 +1265,53 @@ def get_spdx3_root_package(payload: Payload) -> Package | None:
     return packages[0] if packages else None
 
 
+def spdx3_ids_stating_a_license(payload: Payload, relationship_type: str = "hasDeclaredLicense") -> set[str]:
+    """Every spdxId that already states a licence through *relationship_type*.
+
+    One pass over the payload, for callers asking about many packages.
+    :func:`spdx3_license_relationships` answers for one and returns the
+    relationship objects, which a caller replacing a licence needs; asking it
+    per package walks the whole payload each time, and an enrichment run over
+    a large document is packages times elements of that.
+    """
+    kept = payload.kept_raw_fields if isinstance(payload, Spdx3Payload) else {}
+    stating: set[str] = set()
+    for element in payload.get_full_map().values():
+        if not isinstance(element, Relationship):
+            continue
+        raw = kept.get(element.spdx_id, {}).get("relationshipType")
+        name = raw or _REL_TYPE_NAMES.get(element.relationship_type)
+        if name == relationship_type and isinstance(element.from_element, str):
+            stating.add(element.from_element)
+    return stating
+
+
+def spdx3_license_relationships(
+    payload: Payload,
+    spdx_id: str,
+    relationship_type: str = "hasDeclaredLicense",
+) -> list[Relationship]:
+    """The relationships through which *spdx_id* already states a licence.
+
+    3.0.1 states a licence as a Relationship and spdx-tools has no field for
+    it, so a package whose author declared one parses with declared_license
+    unset. Read as "no licence", that is how the action came to add a second,
+    possibly contradicting declaration to a package that already had one.
+    """
+    kept = payload.kept_raw_fields if isinstance(payload, Spdx3Payload) else {}
+    found = []
+    for element in payload.get_full_map().values():
+        if not isinstance(element, Relationship) or element.from_element != spdx_id:
+            continue
+        raw = kept.get(element.spdx_id, {}).get("relationshipType")
+        # The raw value when the library's enum could not hold it, which is
+        # the case for every licence relationship in 3.0.1; the enum's own
+        # spelling otherwise, so this keeps working if that changes.
+        if (raw or _REL_TYPE_NAMES.get(element.relationship_type)) == relationship_type:
+            found.append(element)
+    return found
+
+
 def make_spdx3_creation_info(
     created_by: list[str] | None = None,
 ) -> CreationInfo:
@@ -789,7 +1319,10 @@ def make_spdx3_creation_info(
     return CreationInfo(
         spec_version=Version("3.0.1"),
         created=datetime.now(timezone.utc),
-        created_by=created_by or [],
+        # Not an empty list: createdBy is required with minItems 1, so an
+        # element minted without a creator named fails the schema and takes
+        # every element sharing its CreationInfo down with it.
+        created_by=created_by or [_ACTION_AGENT_ID],
         profile=[ProfileIdentifierType.CORE, ProfileIdentifierType.SOFTWARE],
         data_license="CC0-1.0",
     )
