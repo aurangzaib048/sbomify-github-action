@@ -1068,6 +1068,30 @@ def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url: str | None) -> None:
+    """Make what the action mints declare the document's own spec version.
+
+    :func:`make_spdx3_creation_info` hardcodes 3.0.1 because it has no document
+    to ask. Since the writer preserves the ``@context`` the input declared, a
+    3.0 document came back carrying 3.0.1 on every element the action added:
+    the context and specVersion disagreement this module exists to prevent,
+    walking back in through the minting path.
+
+    Only the ones the action minted are touched, and they are identifiable
+    precisely because make_spdx3_creation_info names the action as their
+    creator. A CreationInfo the producer wrote keeps whatever it says.
+    """
+    if not context_url:
+        return
+    match = _SPDX3_VERSION_RE.search(context_url)
+    if not match:
+        return
+    declared = match.group(1)
+    for creation_info in _creation_infos_in(element_list):
+        if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
+            creation_info["specVersion"] = declared
+
+
 def _add_the_action_agent(element_list: list[dict[str, Any]]) -> None:
     """Put the agent in the graph, if anything the action minted names it.
 
@@ -1166,6 +1190,8 @@ def write_spdx3_file(
     _restore_document_fields(payload, element_list)
     _licenses_as_relationships(element_list)
     _add_the_action_agent(element_list)
+    # After the agent, so the one it mints for itself is aligned too.
+    _align_minted_spec_versions(element_list, context_url)
 
     complete_dict = {"@context": context_url, "@graph": element_list}
 

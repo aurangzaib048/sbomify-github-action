@@ -745,3 +745,60 @@ class TestOverridingALicenceLeavesNoDanglingReference:
         ]
 
         assert declared == ["GPL-3.0-only"]
+
+
+class TestWhatTheActionMintsAgreesWithTheDocument:
+    """make_spdx3_creation_info hardcodes 3.0.1 because it has no document to
+    ask. The writer preserves the @context the input declared, so a 3.0
+    document came back carrying 3.0.1 on every element the action added: the
+    context and specVersion disagreement this module exists to prevent,
+    walking back in through the minting path.
+    """
+
+    @staticmethod
+    def _as_300_with_a_minted_element(tmp_path):
+        from sbomify_action.spdx3 import Organization, make_spdx3_creation_info
+
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
+        for element in source["@graph"]:
+            if element.get("type") == "CreationInfo":
+                element["specVersion"] = "3.0.0"
+        payload = parse_spdx3_data(source)
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+        return json.loads(out.read_text())
+
+    @staticmethod
+    def _spec_versions(node, found=None):
+        found = [] if found is None else found
+        if isinstance(node, dict):
+            if isinstance(node.get("specVersion"), str):
+                found.append(node["specVersion"])
+            for value in node.values():
+                TestWhatTheActionMintsAgreesWithTheDocument._spec_versions(value, found)
+        elif isinstance(node, list):
+            for item in node:
+                TestWhatTheActionMintsAgreesWithTheDocument._spec_versions(item, found)
+        return found
+
+    def test_one_version_throughout(self, tmp_path):
+        written = self._as_300_with_a_minted_element(tmp_path)
+
+        assert set(self._spec_versions(written["@graph"])) == {"3.0.0"}
+
+    def test_the_context_still_agrees_with_it(self, tmp_path):
+        written = self._as_300_with_a_minted_element(tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
+
+    def test_a_301_document_is_left_at_301(self, tmp_path):
+        written = self._as_300_with_a_minted_element(tmp_path / "a")
+        assert "3.0.1" not in self._spec_versions(written["@graph"])
+
+        plain = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
+        assert set(self._spec_versions(plain["@graph"])) == {"3.0.1"}
