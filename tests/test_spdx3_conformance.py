@@ -917,6 +917,57 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
         assert set(self._spec_versions(plain["@graph"])) == {"3.0.1"}
 
 
+class TestAProfileStatedTheWayTheDraftStatesIt:
+    """spdx-tools puts conformance on the CreationInfo as ``profile``, real
+    producers emit it there, and the normalisation strips it from every
+    CreationInfo on the way out. A document that stated its conformance only
+    there silently stopped claiming it.
+    """
+
+    def _written(self, tmp_path, inline: bool) -> dict:
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document.pop("profileConformance", None)
+        if inline:
+            document["creationInfo"] = {"type": "CreationInfo", "specVersion": "3.0.1", "profile": ["core", "software"]}
+        else:
+            referenced = next(
+                e for e in source["@graph"] if (e.get("@id") or e.get("spdxId")) == document["creationInfo"]
+            )
+            referenced["profile"] = ["core", "software"]
+        return _write(source, tmp_path)
+
+    @pytest.mark.parametrize("inline", [True, False], ids=["inline", "referenced"])
+    def test_it_survives_as_the_property_3_0_1_has(self, inline, tmp_path):
+        written = self._written(tmp_path, inline)
+
+        assert _elements(written, "SpdxDocument")[0]["profileConformance"] == ["core", "software"]
+
+    def test_the_document_s_own_claim_still_wins(self, tmp_path):
+        """The fallback is a fallback. A document stating both keeps what it
+        put on the property 3.0.1 actually reads."""
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document["profileConformance"] = ["core"]
+        referenced = next(e for e in source["@graph"] if (e.get("@id") or e.get("spdxId")) == document["creationInfo"])
+        referenced["profile"] = ["core", "software", "licensing"]
+
+        written = _write(source, tmp_path)
+
+        assert _elements(written, "SpdxDocument")[0]["profileConformance"] == ["core"]
+
+    def test_a_document_that_claimed_neither_still_claims_neither(self, tmp_path):
+        """Conformance is a claim about what the document satisfies, so one
+        nobody wrote must not appear because the writer went looking."""
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document.pop("profileConformance", None)
+
+        written = _write(source, tmp_path)
+
+        assert "profileConformance" not in _elements(written, "SpdxDocument")[0]
+
+
 class TestADataLicenseTheDocumentPointsAtRatherThanInlines:
     """JSON-LD lets a document inline its CreationInfo or reference one, and
     this repo's own fixtures reference: ``"creationInfo": "_:creationinfo"``.
