@@ -109,6 +109,12 @@ SPDX3_CONTEXT_URL = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 # Regex to detect spdx.org/rdf/3.x context
 _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 
+#: The one the schemas pin, with a ``const``. Anything else under
+#: ``spdx.org/rdf/3`` identifies a document as SPDX 3 without being a context
+#: the writer may echo back: ``spdx.org/rdf/3.0.1/terms/Core/`` is a terms
+#: IRI, and writing it as ``@context`` fails the schema it came from.
+_SPDX3_CONTEXT_URL_RE = re.compile(r"https?://spdx\.org/rdf/\d+\.\d+(?:\.\d+)?/spdx-context\.jsonld")
+
 # Regex to extract version from context URL
 #: Two parts or three: spdx.org/rdf/3.0/ is a real context, served and
 #: byte-identical to the 3.0.1 one today, so a document can legitimately
@@ -719,6 +725,11 @@ def _declared_context(context: Any) -> str | None:
 
     JSON-LD allows a string, a list or an object, and a document that wraps its
     context in a list is as conformant as one that does not.
+
+    What comes back is written straight out as the ``@context`` of what the
+    action produces, so only the schema-pinned context URL counts. A document
+    can carry other ``spdx.org/rdf/3`` URLs, and echoing one of those back
+    would relabel a conformant input as something no schema accepts.
     """
     candidates: list[str]
     if isinstance(context, str):
@@ -730,8 +741,8 @@ def _declared_context(context: Any) -> str | None:
     else:
         return None
     for candidate in candidates:
-        if _SPDX3_CONTEXT_RE.search(candidate):
-            return candidate
+        if _SPDX3_CONTEXT_URL_RE.fullmatch(candidate.strip()):
+            return candidate.strip()
     return None
 
 
