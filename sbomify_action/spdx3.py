@@ -670,9 +670,10 @@ def _capture_document_fields(
 ) -> None:
     """Carry the two document-level fields the draft model cannot hold.
 
-    ``dataLicense`` is read from the SpdxDocument, which is where 3.0.1 puts
-    it, and from the CreationInfo as a fallback, which is where this repo's
-    older fixtures and spdx-tools both put it.
+    ``dataLicense`` and ``profileConformance`` are both read from the
+    SpdxDocument, which is where 3.0.1 puts them, and from the CreationInfo as
+    a fallback, which is where this repo's older fixtures and spdx-tools both
+    put them.
     """
     data_license = elem.get("dataLicense")
     if not isinstance(data_license, str) or not data_license:
@@ -694,6 +695,16 @@ def _capture_document_fields(
         payload.document_data_license = _as_license_iri(data_license)
 
     profiles = elem.get("profileConformance")
+    if not profiles:
+        # The draft location again. spdx-tools puts conformance on the
+        # CreationInfo as ``profile``, real producers emit it there, and the
+        # normalisation strips it from every CreationInfo on the way out. Read
+        # here it survives as the property 3.0.1 actually has; not read, the
+        # document silently stops claiming a conformance its author wrote.
+        ci = elem.get("creationInfo")
+        if isinstance(ci, str) and raw_creation_infos:
+            ci = raw_creation_infos.get(ci)
+        profiles = ci.get("profile") if isinstance(ci, dict) else None
     if isinstance(profiles, str):
         profiles = [profiles]
     if isinstance(profiles, list):
