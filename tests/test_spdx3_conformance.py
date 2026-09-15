@@ -695,3 +695,53 @@ class TestWhatTheProducerWroteSurvivesTheRoundTrip:
         second = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
 
         assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+
+class TestOverridingALicenceLeavesNoDanglingReference:
+    """A document that lists its elements is asserting what it contains.
+
+    Overriding a declared licence removes the relationship that stated the old
+    one. Removing it from the graph but not from that list leaves the document
+    claiming an element nobody can resolve, and no schema catches it: JSON
+    Schema cannot follow a cross-reference.
+    """
+
+    def _augmented(self, tmp_path):
+        import json as _json
+
+        from sbomify_action.augmentation import augment_spdx3_sbom
+
+        source = _json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document["element"] = [
+            e["spdxId"] for e in source["@graph"] if e.get("spdxId") and e["spdxId"] != document["spdxId"]
+        ]
+        in_path, out_path = tmp_path / "in.json", tmp_path / "out.json"
+        in_path.write_text(_json.dumps(source))
+        augment_spdx3_sbom(
+            str(in_path),
+            str(out_path),
+            {"licenses": [{"spdx_id": "GPL-3.0-only"}]},
+            override_sbom_metadata=True,
+        )
+        return _json.loads(out_path.read_text())
+
+    def test_every_listed_element_is_in_the_graph(self, tmp_path):
+        written = self._augmented(tmp_path)
+
+        present = {e.get("spdxId") for e in written["@graph"] if e.get("spdxId")}
+        listed = next(e for e in written["@graph"] if e.get("type") == "SpdxDocument").get("element", [])
+
+        assert [x for x in listed if x not in present] == []
+
+    def test_the_override_still_took(self, tmp_path):
+        written = self._augmented(tmp_path)
+
+        by_id = {e.get("spdxId"): e for e in written["@graph"]}
+        declared = [
+            by_id.get(r["to"][0], {}).get("simplelicensing_licenseExpression")
+            for r in _elements(written, "Relationship")
+            if r["relationshipType"] == "hasDeclaredLicense"
+        ]
+
+        assert declared == ["GPL-3.0-only"]
