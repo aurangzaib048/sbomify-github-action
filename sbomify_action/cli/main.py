@@ -554,7 +554,14 @@ class Config:
                 if self.spec_version.startswith("3"):
                     from ..validation import SPDX_SCHEMAS
 
-                    readable = self.spec_version in SPDX_SCHEMAS
+                    # "3.0" is a key in SPDX_SCHEMAS so an alias-context
+                    # document reaches a schema at all, but it is not a version
+                    # anyone can send: both official schemas pin @context with
+                    # a const to their fully qualified URL, so a document
+                    # declaring the bare 3.0 line fails whichever schema it is
+                    # held to. Offering SBOM_FILE for it would cost a round
+                    # trip to the same refusal.
+                    readable = self.spec_version in SPDX_SCHEMAS and self.spec_version != "3.0"
                     hint = (
                         f" SPDX {self.spec_version} cannot be generated from a lock file or"
                         " Docker image -- no generator plugin emits any SPDX 3."
