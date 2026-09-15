@@ -2599,9 +2599,15 @@ class TestSanitizeSpdx3Licenses:
         assert sanitize_spdx_licenses(data) == 1
         assert data["packages"][0]["licenseDeclared"].startswith("LicenseRef-")
 
+    #: Matched on what the test needs rather than on a directory existing. The
+    #: in-repo corpus is real Yocto output but named per recipe
+    #: (busybox.spdx.json), so a glob written for the release-tarball names
+    #: found a directory, skipped nothing, and then had nothing to check.
+    DOCUMENTS = sorted(YOCTO.glob("*.spdx.json")) if YOCTO.is_dir() else []
+
     @pytest.mark.skipif(
-        not YOCTO.is_dir(),
-        reason="published Yocto SBOMs not present; set SBOMIFY_YOCTO_CORPUS to a directory holding them",
+        not DOCUMENTS,
+        reason="no Yocto SBOMs to check; set SBOMIFY_YOCTO_CORPUS to a directory holding some",
     )
     def test_the_real_yocto_documents_do_not_move(self):
         """The issue says RPM-style strings matter most for the Yocto path.
@@ -2609,11 +2615,10 @@ class TestSanitizeSpdx3Licenses:
         200 expressions across the three published SPDX 3 images are already
         valid. This is the guard that a future change to the sanitizer does
         not start rewriting somebody's correct licences."""
-        documents = sorted(self.YOCTO.glob("yocto-*.spdx.json"))
-        # Or the loop below runs zero times and the guard passes having
-        # asserted nothing, which is the failure mode a skipif invites.
-        assert documents, f"{self.YOCTO} holds no yocto-*.spdx.json to check"
-        for path in documents:
+        # Asserted as well as skipped on: a guard that iterates an empty list
+        # reports green precisely when it is not guarding.
+        assert self.DOCUMENTS, f"{self.YOCTO} holds no *.spdx.json to check"
+        for path in self.DOCUMENTS:
             document = json.loads(path.read_text())
             before = json.dumps(document, sort_keys=True)
 
