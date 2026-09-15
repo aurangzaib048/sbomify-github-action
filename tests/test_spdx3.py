@@ -69,6 +69,55 @@ class TestExtractSpdx3Version(unittest.TestCase):
     def test_no_context(self):
         self.assertIsNone(extract_spdx3_version({}))
 
+    def test_the_document_outranks_an_element_that_disagrees(self):
+        """A merged document carries the other document's version on the
+        element it took, and the scan returned whichever came first in the
+        file. The SpdxDocument's own CreationInfo is the normative claim."""
+        data = {
+            "@graph": [
+                {
+                    "type": "software_Package",
+                    "spdxId": "urn:p",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+                },
+                {
+                    "type": "SpdxDocument",
+                    "spdxId": "urn:d",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1"},
+                },
+            ]
+        }
+        self.assertEqual(extract_spdx3_version(data), "3.0.1")
+
+    def test_the_document_is_asked_even_when_it_references_its_creation_info(self):
+        """This repo's own fixtures reference rather than inline, so reading
+        only the inline form would leave the preference doing nothing."""
+        data = {
+            "@graph": [
+                {"type": "CreationInfo", "@id": "_:doc-ci", "specVersion": "3.0.1"},
+                {
+                    "type": "software_Package",
+                    "spdxId": "urn:p",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+                },
+                {"type": "SpdxDocument", "spdxId": "urn:d", "creationInfo": "_:doc-ci"},
+            ]
+        }
+        self.assertEqual(extract_spdx3_version(data), "3.0.1")
+
+    def test_a_document_that_states_nothing_falls_back_to_the_graph(self):
+        data = {
+            "@graph": [
+                {
+                    "type": "software_Package",
+                    "spdxId": "urn:p",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+                },
+                {"type": "SpdxDocument", "spdxId": "urn:d"},
+            ]
+        }
+        self.assertEqual(extract_spdx3_version(data), "3.0.0")
+
 
 class TestParseSpdx3File(unittest.TestCase):
     """Tests for parse_spdx3_file()."""
