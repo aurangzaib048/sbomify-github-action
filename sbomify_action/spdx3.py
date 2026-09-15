@@ -563,7 +563,30 @@ def _capture_unmodelled_purposes(payload: "Spdx3Payload", elem: dict[str, Any]) 
     _keep(payload, elem, kept)
 
 
-def _capture_document_fields(payload: "Spdx3Payload", elem: dict[str, Any]) -> None:
+#: Where SPDX publishes the licence list. A bare id in the draft location means
+#: this licence; 3.0.1 just spells it as an IRI.
+_SPDX_LICENSE_BASE = "https://spdx.org/licenses/"
+
+
+def _as_license_iri(value: str) -> str:
+    """A licence the way 3.0.1 spells it.
+
+    The draft location holds a bare id, `"CC0-1.0"`, and `dataLicense` on
+    SpdxDocument resolves to a licence IRI. Writing the bare id back produced a
+    document that failed the schema, so carrying the value forward has to carry
+    its spelling forward too. A rewrite rather than an invention: the id and the
+    IRI name the same licence, and anything that already looks like an IRI is
+    left exactly as the producer wrote it.
+    """
+    stripped = value.strip()
+    if not stripped or "://" in stripped or stripped.startswith("urn:"):
+        return stripped
+    return _SPDX_LICENSE_BASE + stripped
+
+
+def _capture_document_fields(
+    payload: "Spdx3Payload", elem: dict[str, Any], raw_creation_infos: dict[str, dict[str, Any]] | None = None
+) -> None:
     """Carry the two document-level fields the draft model cannot hold.
 
     ``dataLicense`` is read from the SpdxDocument, which is where 3.0.1 puts
@@ -578,9 +601,16 @@ def _capture_document_fields(payload: "Spdx3Payload", elem: dict[str, Any]) -> N
         # author declared none both invents a claim and fails the schema, which
         # wants a licence IRI rather than a short identifier.
         ci = elem.get("creationInfo")
+        # Either shape. JSON-LD lets a document inline its CreationInfo or
+        # point at a standalone one, and this repo's own fixtures point:
+        # "creationInfo": "_:creationinfo". Reading only the inline form meant
+        # a legacy dataLicense on the referenced element was stripped by the
+        # normalisation and never put back.
+        if isinstance(ci, str) and raw_creation_infos:
+            ci = raw_creation_infos.get(ci)
         data_license = ci.get("dataLicense") if isinstance(ci, dict) else None
     if isinstance(data_license, str) and data_license:
-        payload.document_data_license = data_license
+        payload.document_data_license = _as_license_iri(data_license)
 
     profiles = elem.get("profileConformance")
     if isinstance(profiles, str):
@@ -679,6 +709,10 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
     # First pass: collect CreationInfo elements keyed by IRI so that
     # elements referencing them via string can be resolved.
     ci_map: dict[str, CreationInfo] = {}
+    # The same elements unparsed, for the fields the draft model has no slot
+    # for: a document that references its CreationInfo rather than inlining it
+    # keeps its legacy dataLicense there, and the parsed object cannot carry it.
+    raw_creation_infos: dict[str, dict[str, Any]] = {}
     for elem in graph:
         if not isinstance(elem, dict):
             continue
@@ -687,6 +721,7 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
             ci_id = elem.get("@id") or elem.get("spdxId")
             if ci_id:
                 ci_map[ci_id] = _parse_creation_info(elem)
+                raw_creation_infos[ci_id] = elem
 
     # Second pass: parse all other elements
     payload = Spdx3Payload()
@@ -707,7 +742,7 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
         try:
             if elem_type == "SpdxDocument":
                 payload.add_element(_parse_spdx_document(elem, ci_map))
-                _capture_document_fields(payload, elem)
+                _capture_document_fields(payload, elem, raw_creation_infos)
             elif elem_type == "Package":
                 payload.add_element(_parse_package(elem, ci_map))
                 _capture_unmodelled_purposes(payload, elem)
@@ -1199,6 +1234,27 @@ def get_spdx3_root_package(payload: Payload) -> Package | None:
     # Fallback: return first package
     packages = get_spdx3_packages(payload)
     return packages[0] if packages else None
+
+
+def spdx3_ids_stating_a_license(payload: Payload, relationship_type: str = "hasDeclaredLicense") -> set[str]:
+    """Every spdxId that already states a licence through *relationship_type*.
+
+    One pass over the payload, for callers asking about many packages.
+    :func:`spdx3_license_relationships` answers for one and returns the
+    relationship objects, which a caller replacing a licence needs; asking it
+    per package walks the whole payload each time, and an enrichment run over
+    a large document is packages times elements of that.
+    """
+    kept = payload.kept_raw_fields if isinstance(payload, Spdx3Payload) else {}
+    stating: set[str] = set()
+    for element in payload.get_full_map().values():
+        if not isinstance(element, Relationship):
+            continue
+        raw = kept.get(element.spdx_id, {}).get("relationshipType")
+        name = raw or _REL_TYPE_NAMES.get(element.relationship_type)
+        if name == relationship_type and isinstance(element.from_element, str):
+            stating.add(element.from_element)
+    return stating
 
 
 def spdx3_license_relationships(
