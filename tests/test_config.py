@@ -1441,10 +1441,6 @@ class TestActionYmlExposesTheFormatKnobs(unittest.TestCase):
             self.assertIn(f"inputs['{name}']", wired, f"{name} is declared but reaches no env var")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheInputsSurviveBeingOmitted(unittest.TestCase):
     """GitHub Actions passes an omitted input as an empty string, not as
     absent, so `env: X: ${{ inputs.x }}` sets X="" rather than leaving it
@@ -1502,3 +1498,7 @@ class TestTheThreeZeroLineIsNotOfferedAsARoute(unittest.TestCase):
 
     def test_the_versions_that_are_readable_still_are(self):
         self.assertIn("pass an existing 3.0.1 document", self._error("3.0.1"))
+
+
+if __name__ == "__main__":
+    unittest.main()
