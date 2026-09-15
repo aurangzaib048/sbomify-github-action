@@ -954,6 +954,9 @@ class TestRegistryGenerateWithFallback(unittest.TestCase):
 
         message = str(cm.exception)
         self.assertIn("Nothing here generates CycloneDX", message)
+        # The caller asked for no particular version; naming one it never
+        # requested sends the reader looking for where they set it.
+        self.assertNotIn("None", message)
         # The versions come from the canonical tuple, so the internal
         # "SPDX-2.3" marker some generators declare cannot leak into a list a
         # user would then try to set.
