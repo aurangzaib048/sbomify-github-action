@@ -832,6 +832,48 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
 
+    @staticmethod
+    def _minted_under(context, tmp_path):
+        from sbomify_action.spdx3 import Organization, make_spdx3_creation_info
+
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = context
+        payload = parse_spdx3_data(source)
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+        written = json.loads(out.read_text())
+        minted = [ci for ci in _creation_infos(written) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
+        assert minted
+        return {ci["specVersion"] for ci in minted}
+
+    def test_a_two_part_context_takes_the_version_the_producer_states(self, tmp_path):
+        """spdx.org/rdf/3.0/ is a real context, and the version read off it has
+        two parts. Writing that as a specVersion fails the semver pattern the
+        schema holds it to, so what the producer states settles it and the
+        context only says which line."""
+        assert self._minted_under("https://spdx.org/rdf/3.0/spdx-context.jsonld", tmp_path) == {"3.0.1"}
+
+    def test_a_two_part_context_with_nothing_else_to_go_on_settles_on_zero(self, tmp_path):
+        """A document the action builds from nothing has no producer to ask,
+        and .0 is at least a version the schema will read."""
+        from sbomify_action.spdx3 import Organization, Spdx3Payload, make_spdx3_creation_info
+
+        payload = Spdx3Payload()
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out), context_url="https://spdx.org/rdf/3.0/spdx-context.jsonld")
+
+        written = json.loads(out.read_text())
+        minted = [ci for ci in _creation_infos(written) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
+        assert minted and {ci["specVersion"] for ci in minted} == {"3.0.0"}
+
     def test_a_301_document_is_left_at_301(self, tmp_path):
         written = self._as_300_with_a_minted_element(tmp_path / "a")
         assert "3.0.1" not in self._spec_versions(written["@graph"])
