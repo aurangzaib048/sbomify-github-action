@@ -2609,7 +2609,11 @@ class TestSanitizeSpdx3Licenses:
         200 expressions across the three published SPDX 3 images are already
         valid. This is the guard that a future change to the sanitizer does
         not start rewriting somebody's correct licences."""
-        for path in sorted(self.YOCTO.glob("yocto-*.spdx.json")):
+        documents = sorted(self.YOCTO.glob("yocto-*.spdx.json"))
+        # Or the loop below runs zero times and the guard passes having
+        # asserted nothing, which is the failure mode a skipif invites.
+        assert documents, f"{self.YOCTO} holds no yocto-*.spdx.json to check"
+        for path in documents:
             document = json.loads(path.read_text())
             before = json.dumps(document, sort_keys=True)
 
