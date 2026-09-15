@@ -1352,7 +1352,13 @@ def sanitize_spdx_licenses(data: dict[str, Any]) -> int:
     if isinstance(graph, dict):
         graph = [graph]
     for element in graph:
-        if not isinstance(element, dict) or element.get("type") != "simplelicensing_LicenseExpression":
+        if not isinstance(element, dict):
+            continue
+        # JSON-LD states the type as `type` under the SPDX 3 context and as
+        # `@type` expanded. spdx3.py reads both, and the component id below
+        # already reads both spellings of the id; reading one spelling of the
+        # type here skips a conforming document and reports nothing to fix.
+        if (element.get("type") or element.get("@type")) != "simplelicensing_LicenseExpression":
             continue
         sanitized_count += _sanitize_license_field(
             element,

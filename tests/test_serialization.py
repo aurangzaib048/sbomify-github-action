@@ -2592,6 +2592,24 @@ class TestSanitizeSpdx3Licenses:
 
         assert sanitize_spdx_licenses(document) == 0
 
+    def test_an_element_typed_the_expanded_json_ld_way(self):
+        """`@type` and `@id` are the expanded JSON-LD spellings of `type` and
+        `spdxId`. A document using them is conforming, and reading only the
+        compact spelling walks past it and reports nothing to fix."""
+        document = {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [
+                {
+                    "@type": "simplelicensing_LicenseExpression",
+                    "@id": "urn:lic",
+                    "simplelicensing_licenseExpression": "GPLv2+",
+                }
+            ],
+        }
+
+        assert sanitize_spdx_licenses(document) == 1
+        assert document["@graph"][0]["simplelicensing_licenseExpression"].startswith("LicenseRef-")
+
     def test_a_graph_that_is_one_object_rather_than_an_array(self):
         """JSON-LD allows @graph to be a single node object. The SPDX 3
         schemas pin it to an array, so a document shaped that way fails
