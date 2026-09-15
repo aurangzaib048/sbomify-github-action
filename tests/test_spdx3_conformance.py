@@ -637,3 +637,61 @@ class TestTheOtherWritePaths:
         written = json.loads(out.read_text())
         assert _errors(validator, written) == []
         assert _elements(written, "software_Package")[0]["software_packageVersion"] == "9.9.9"
+
+
+class TestWhatTheProducerWroteSurvivesTheRoundTrip:
+    """Three ways the preservation machinery lost what it was built to keep."""
+
+    def test_a_purpose_the_library_knows_survives_beside_one_it_does_not(self, tmp_path, validator):
+        """Only the strangers were kept, and restoring overwrites the whole
+        list, so a package listing both came back with only the stranger."""
+        source = json.loads(FIXTURE.read_text())
+        for element in source["@graph"]:
+            if element.get("type") == "software_Package":
+                element["software_additionalPurpose"] = ["library", "specification"]
+
+        written = _write(source, tmp_path)
+
+        assert _errors(validator, written) == []
+        assert _elements(written, "software_Package")[0]["software_additionalPurpose"] == [
+            "library",
+            "specification",
+        ]
+
+    @pytest.mark.parametrize(
+        "context",
+        [
+            pytest.param(["https://spdx.org/rdf/3.0.1/spdx-context.jsonld"], id="list"),
+            pytest.param({"@vocab": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}, id="object"),
+        ],
+    )
+    def test_a_context_that_is_not_a_bare_string_is_still_the_document_s(self, context, tmp_path):
+        """JSON-LD allows all three shapes and is_spdx3 reads all three. Taking
+        only the string left context_url unset, and the writer then relabelled
+        the document to the current release."""
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = context
+
+        written = _write(source, tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+    def test_two_runs_over_one_input_produce_the_same_bytes(self, tmp_path):
+        """The minted agent stamped the clock, so every rewrite differed by a
+        line a user had to read and discard."""
+        source = json.loads(FIXTURE.read_text())
+        source["@graph"].append(
+            {
+                "type": "Organization",
+                "spdxId": "urn:acme:minted",
+                "name": "Acme",
+                "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1", "created": "2026-01-01T00:00:00Z"},
+            }
+        )
+        payload = parse_spdx3_data(source)
+        payload.get_full_map()
+
+        first = _write(json.loads(FIXTURE.read_text()), tmp_path / "a")
+        second = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
+
+        assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
