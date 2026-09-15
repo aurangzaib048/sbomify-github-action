@@ -131,7 +131,7 @@ file or a container image in the first place.
 | --- | --- | --- | --- |
 | CycloneDX (JSON) | 1.2–1.7 | 1.3–1.7 | 1.6 |
 | SPDX (JSON) | 2.2, 2.3 | 2.2, 2.3 | 2.3 |
-| SPDX (JSON-LD) | none | 3.0, 3.0.1 | — |
+| SPDX (JSON-LD) | none | 3.0.0, 3.0.1 | — |
 
 **SPDX 3 is ingest and rewrite only.** No tool generates it: Syft is the only SPDX
 generator here and it stops at 2.3. So `SPEC_VERSION: 3.0.1` with a lock file fails
