@@ -702,6 +702,19 @@ class TestWhatTheProducerWroteSurvivesTheRoundTrip:
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
+    def test_an_http_context_is_written_back_as_https(self, tmp_path, validator):
+        """The schemas pin @context to the https form with a const, so what an
+        http one names is the version rather than the scheme. Echoing the
+        scheme back meant the action wrote a document its own validation step
+        then refused."""
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = "http://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+        written = _write(source, tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+        assert _errors(validator, written) == []
+
     def test_a_line_alias_context_is_resolved_to_the_one_the_schemas_pin(self, tmp_path, validator):
         """spdx.org/rdf/3.0/ is served and byte-identical to the 3.0.1 one, so
         a producer may point at it, but the schemas pin @context with a const

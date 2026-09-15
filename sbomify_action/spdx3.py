@@ -786,8 +786,14 @@ def _declared_context(context: Any) -> str | None:
     else:
         return None
     for candidate in candidates:
-        if _SPDX3_CONTEXT_URL_RE.fullmatch(candidate.strip()):
-            return candidate.strip()
+        cleaned = candidate.strip()
+        if not _SPDX3_CONTEXT_URL_RE.fullmatch(cleaned):
+            continue
+        # The schemas pin @context to the https form, so what an http one
+        # names is the version, not the scheme it happens to be written with.
+        if cleaned.startswith("http://"):
+            cleaned = "https://" + cleaned[len("http://") :]
+        return cleaned
     return None
 
 
