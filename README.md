@@ -177,7 +177,7 @@ also available as `with:` inputs:
 | `component-purl` | `COMPONENT_PURL` | Override the component PURL in the SBOM |
 | `bom-type` | `BOM_TYPE` | `sbom` (default), `vex`, `cbom` or `hbom` |
 | `sbom-format` | `SBOM_FORMAT` | `cyclonedx` (default) or `spdx` |
-| `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3 |
+| `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3, or SPDX 3.0.1 with `LOCK_FILE: none`. Ignored when `SBOM_FILE` names a real file |
 | `oidc-audience` | `OIDC_AUDIENCE` | Audience for trusted publishing; override for self-hosted |
 
 ## Documents
