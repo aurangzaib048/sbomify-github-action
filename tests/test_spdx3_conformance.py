@@ -19,6 +19,7 @@ Those cases need an assertion on the value, not on the error count.
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -26,6 +27,7 @@ import jsonschema
 import pytest
 
 from sbomify_action.spdx3 import (
+    _ACTION_AGENT_ID,
     Organization,
     Package,
     make_spdx3_creation_info,
@@ -676,24 +678,58 @@ class TestWhatTheProducerWroteSurvivesTheRoundTrip:
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
+    @pytest.mark.parametrize(
+        "context",
+        [
+            pytest.param("https://spdx.org/rdf/3.0.1/terms/Core/", id="only-a-terms-iri"),
+            pytest.param(
+                [
+                    "https://spdx.org/rdf/3.0.1/terms/Core/",
+                    "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+                ],
+                id="a-terms-iri-listed-first",
+            ),
+        ],
+    )
+    def test_an_spdx_url_that_is_not_the_context_is_not_written_as_one(self, context, tmp_path):
+        """Any spdx.org/rdf/3 URL counted as the document's context, so a
+        document naming a terms IRI came back declaring that as its @context.
+        The schemas pin @context with a const, so nothing would accept it."""
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = context
+
+        written = _write(source, tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
     def test_two_runs_over_one_input_produce_the_same_bytes(self, tmp_path):
         """The minted agent stamped the clock, so every rewrite differed by a
-        line a user had to read and discard."""
+        line a user had to read and discard.
+
+        The agent is only added when something already names it, so the input
+        has to carry an element the action minted for the regression to have
+        anywhere to happen.
+        """
         source = json.loads(FIXTURE.read_text())
         source["@graph"].append(
             {
                 "type": "Organization",
                 "spdxId": "urn:acme:minted",
                 "name": "Acme",
-                "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1", "created": "2026-01-01T00:00:00Z"},
+                "creationInfo": {
+                    "type": "CreationInfo",
+                    "specVersion": "3.0.1",
+                    "created": "2026-01-01T00:00:00Z",
+                    "createdBy": [_ACTION_AGENT_ID],
+                },
             }
         )
-        payload = parse_spdx3_data(source)
-        payload.get_full_map()
 
-        first = _write(json.loads(FIXTURE.read_text()), tmp_path / "a")
-        second = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
+        first = _write(copy.deepcopy(source), tmp_path / "a")
+        second = _write(copy.deepcopy(source), tmp_path / "b")
 
+        agent = next(e for e in first["@graph"] if e.get("spdxId") == _ACTION_AGENT_ID)
+        assert agent["creationInfo"]["created"] == "2026-01-01T00:00:00Z"
         assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
 
 
@@ -795,6 +831,48 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
         written = self._as_300_with_a_minted_element(tmp_path)
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
+
+    @staticmethod
+    def _minted_under(context, tmp_path):
+        from sbomify_action.spdx3 import Organization, make_spdx3_creation_info
+
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = context
+        payload = parse_spdx3_data(source)
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out))
+        written = json.loads(out.read_text())
+        minted = [ci for ci in _creation_infos(written) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
+        assert minted
+        return {ci["specVersion"] for ci in minted}
+
+    def test_a_two_part_context_takes_the_version_the_producer_states(self, tmp_path):
+        """spdx.org/rdf/3.0/ is a real context, and the version read off it has
+        two parts. Writing that as a specVersion fails the semver pattern the
+        schema holds it to, so what the producer states settles it and the
+        context only says which line."""
+        assert self._minted_under("https://spdx.org/rdf/3.0/spdx-context.jsonld", tmp_path) == {"3.0.1"}
+
+    def test_a_two_part_context_with_nothing_else_to_go_on_settles_on_zero(self, tmp_path):
+        """A document the action builds from nothing has no producer to ask,
+        and .0 is at least a version the schema will read."""
+        from sbomify_action.spdx3 import Organization, Spdx3Payload, make_spdx3_creation_info
+
+        payload = Spdx3Payload()
+        payload.add_element(
+            Organization(spdx_id="urn:acme:minted", name="Acme", creation_info=make_spdx3_creation_info())
+        )
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.json"
+        write_spdx3_file(payload, str(out), context_url="https://spdx.org/rdf/3.0/spdx-context.jsonld")
+
+        written = json.loads(out.read_text())
+        minted = [ci for ci in _creation_infos(written) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
+        assert minted and {ci["specVersion"] for ci in minted} == {"3.0.0"}
 
     def test_a_301_document_is_left_at_301(self, tmp_path):
         written = self._as_300_with_a_minted_element(tmp_path / "a")

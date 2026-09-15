@@ -109,6 +109,12 @@ SPDX3_CONTEXT_URL = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 # Regex to detect spdx.org/rdf/3.x context
 _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 
+#: The one the schemas pin, with a ``const``. Anything else under
+#: ``spdx.org/rdf/3`` identifies a document as SPDX 3 without being a context
+#: the writer may echo back: ``spdx.org/rdf/3.0.1/terms/Core/`` is a terms
+#: IRI, and writing it as ``@context`` fails the schema it came from.
+_SPDX3_CONTEXT_URL_RE = re.compile(r"https?://spdx\.org/rdf/\d+\.\d+(?:\.\d+)?/spdx-context\.jsonld")
+
 # Regex to extract version from context URL
 #: Two parts or three: spdx.org/rdf/3.0/ is a real context, served and
 #: byte-identical to the 3.0.1 one today, so a document can legitimately
@@ -235,6 +241,34 @@ def _stated_spec_version(node: Any, from_creation_info: bool = False) -> str | N
     return None
 
 
+def _document_spec_version(data: dict[str, Any]) -> str | None:
+    """The ``specVersion`` the SpdxDocument itself states, inline or by reference.
+
+    A graph can hold several CreationInfos, and they need not agree: a merged
+    document, or one whose producer copied in an element written elsewhere,
+    carries the other document's version on that element. Taking the first one
+    the scan reaches then lets an element speak for the whole document, and
+    which element that is depends on serialization order.
+    """
+    graph = data.get("@graph", data)
+    if isinstance(graph, dict):
+        graph = [graph]
+    if not isinstance(graph, list):
+        return None
+    elements = [e for e in graph if isinstance(e, dict)]
+    by_id = {e.get("@id") or e.get("spdxId"): e for e in elements if e.get("@id") or e.get("spdxId")}
+    for element in elements:
+        if (element.get("type") or element.get("@type")) != "SpdxDocument":
+            continue
+        creation_info = element.get("creationInfo")
+        if isinstance(creation_info, str):
+            creation_info = by_id.get(creation_info)
+        stated = _stated_spec_version(creation_info, from_creation_info=True)
+        if stated:
+            return stated
+    return None
+
+
 def extract_spdx3_version(data: dict[str, Any]) -> str | None:
     """The SPDX 3 spec version the document claims. e.g. ``"3.0.1"``.
 
@@ -249,7 +283,7 @@ def extract_spdx3_version(data: dict[str, Any]) -> str | None:
     was written. A document carrying only that and no specVersion is already
     invalid, which is the only case this order leaves ambiguous.
     """
-    stated = _stated_spec_version(data.get("@graph", data))
+    stated = _document_spec_version(data) or _stated_spec_version(data.get("@graph", data))
     if stated:
         return stated
 
@@ -719,6 +753,11 @@ def _declared_context(context: Any) -> str | None:
 
     JSON-LD allows a string, a list or an object, and a document that wraps its
     context in a list is as conformant as one that does not.
+
+    What comes back is written straight out as the ``@context`` of what the
+    action produces, so only the schema-pinned context URL counts. A document
+    can carry other ``spdx.org/rdf/3`` URLs, and echoing one of those back
+    would relabel a conformant input as something no schema accepts.
     """
     candidates: list[str]
     if isinstance(context, str):
@@ -730,8 +769,8 @@ def _declared_context(context: Any) -> str | None:
     else:
         return None
     for candidate in candidates:
-        if _SPDX3_CONTEXT_RE.search(candidate):
-            return candidate
+        if _SPDX3_CONTEXT_URL_RE.fullmatch(candidate.strip()):
+            return candidate.strip()
     return None
 
 
@@ -1103,6 +1142,27 @@ def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any]]) -> str:
+    """A ``specVersion`` the schema accepts, from a context that may be short.
+
+    ``spdx.org/rdf/3.0/`` is a real context, so the version read off a URL can
+    be two parts, and ``specVersion`` is a semver pattern that two parts do not
+    match. The producer's own CreationInfo answers first: a document written
+    against 3.0.1 under the 3.0 context is saying 3.0.1, and taking its word
+    keeps what the action mints on the version the rest of the document is on.
+    Only a document that states no patch number anywhere settles on ``.0``.
+    """
+    if from_context.count(".") == 2:
+        return from_context
+    for creation_info in _creation_infos_in(element_list):
+        if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
+            continue
+        stated = creation_info.get("specVersion")
+        if isinstance(stated, str) and stated.startswith(f"{from_context}.") and stated.count(".") == 2:
+            return stated
+    return f"{from_context}.0"
+
+
 def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url: str | None) -> None:
     """Make what the action mints declare the document's own spec version.
 
@@ -1121,7 +1181,7 @@ def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url:
     match = _SPDX3_VERSION_RE.search(context_url)
     if not match:
         return
-    declared = match.group(1)
+    declared = _three_part_spec_version(match.group(1), element_list)
     for creation_info in _creation_infos_in(element_list):
         if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
             creation_info["specVersion"] = declared
