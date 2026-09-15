@@ -71,9 +71,25 @@ SPDX_SCHEMAS = {
 #: match the backend's own rejection in sbomify/apps/sboms/schemas.py, so a
 #: user who hits both hears one answer rather than two.
 SPDX3_UNSUPPORTED_MESSAGE = (
-    "SPDX {version} is not supported. sbomify accepts SPDX 2.2, 2.3 and 3.0.x; "
+    "SPDX {version} is not supported. sbomify accepts SPDX {supported}; "
     "send 3.0.1 to also satisfy the BSI TR-03183-2 floor."
 )
+
+
+def _supported_spdx_versions() -> str:
+    """The versions this message may honestly claim, from what is bundled.
+
+    The backend's wording says "3.0.x", which is true there: its schema takes a
+    semver pattern, so a later 3.0 patch validates. Here a schema is chosen by
+    exact key, so 3.0.2 is refused, and repeating "3.0.x" meant refusing a
+    3.0.x while claiming to accept it. Derived rather than written out, so
+    bundling a version updates the sentence with it.
+
+    The "3.0" alias key is left out: it exists so an unversioned-context
+    document reaches a schema at all, and is not a version anyone can send.
+    """
+    return ", ".join(v for v in SPDX_SCHEMAS if v != "3.0")
+
 
 # Cache for loaded schemas
 _schema_cache: dict[str, dict[str, Any]] = {}
@@ -230,7 +246,7 @@ def validate_sbom_data(
             # silent pass, which is the safer default for a format still
             # adding versions. 3.1 is the live case: it is at RC1, BSI accepts
             # released versions only, and the backend refuses it too.
-            message = SPDX3_UNSUPPORTED_MESSAGE.format(version=spec_version)
+            message = SPDX3_UNSUPPORTED_MESSAGE.format(version=spec_version, supported=_supported_spdx_versions())
             logger.error(message)
             return ValidationResult.failure(
                 sbom_format=sbom_format,
