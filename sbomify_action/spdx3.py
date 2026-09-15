@@ -1209,6 +1209,27 @@ def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _document_creation_info_first(element_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every CreationInfo in *element_list*, the SpdxDocument's one leading.
+
+    Serialization order otherwise decides which element speaks for a document
+    that holds several disagreeing CreationInfos.
+    """
+    ordered: list[dict[str, Any]] = []
+    document = next((e for e in element_list if e.get("type") == "SpdxDocument"), None)
+    if document is not None:
+        creation_info = document.get("creationInfo")
+        if isinstance(creation_info, str):
+            creation_info = next(
+                (e for e in element_list if (e.get("@id") or e.get("spdxId")) == creation_info),
+                None,
+            )
+        if isinstance(creation_info, dict):
+            ordered.append(creation_info)
+    ordered.extend(_creation_infos_in(element_list))
+    return ordered
+
+
 def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any]]) -> str:
     """A ``specVersion`` the schema accepts, from a context that may be short.
 
@@ -1218,10 +1239,15 @@ def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any
     against 3.0.1 under the 3.0 context is saying 3.0.1, and taking its word
     keeps what the action mints on the version the rest of the document is on.
     Only a document that states no patch number anywhere settles on ``.0``.
+
+    The SpdxDocument is asked before the rest of the graph, for the reason
+    :func:`extract_spdx3_version` asks it: a merged document carries another
+    document's version on the element it took, and the answer here picks both
+    the ``@context`` that gets written and the schema the result is held to.
     """
     if from_context.count(".") == 2:
         return from_context
-    for creation_info in _creation_infos_in(element_list):
+    for creation_info in _document_creation_info_first(element_list):
         if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
             continue
         stated = creation_info.get("specVersion")

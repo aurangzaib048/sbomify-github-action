@@ -992,6 +992,52 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
         context only says which line."""
         assert self._minted_under("https://spdx.org/rdf/3.0/spdx-context.jsonld", tmp_path) == {"3.0.1"}
 
+    @pytest.mark.parametrize("inline", [True, False], ids=["inline", "referenced"])
+    def test_the_document_settles_the_patch_not_whichever_element_comes_first(self, inline, tmp_path):
+        """A merged document carries another document's version on the element
+        it took. Scanning the graph let that element pick the patch for the
+        whole document, which decides both the @context written and the schema
+        the result is held to."""
+        from sbomify_action.spdx3 import _three_part_spec_version
+
+        copied = {
+            "type": "software_Package",
+            "spdxId": "urn:copied",
+            "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+        }
+        if inline:
+            element_list = [
+                copied,
+                {
+                    "type": "SpdxDocument",
+                    "spdxId": "urn:doc",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1"},
+                },
+            ]
+        else:
+            element_list = [
+                copied,
+                {"type": "CreationInfo", "@id": "_:doc-ci", "specVersion": "3.0.1"},
+                {"type": "SpdxDocument", "spdxId": "urn:doc", "creationInfo": "_:doc-ci"},
+            ]
+
+        assert _three_part_spec_version("3.0", element_list) == "3.0.1"
+
+    def test_without_an_spdx_document_the_graph_still_answers(self, tmp_path):
+        """The preference is a preference. A fragment with no SpdxDocument
+        still has a producer worth asking."""
+        from sbomify_action.spdx3 import _three_part_spec_version
+
+        element_list = [
+            {
+                "type": "software_Package",
+                "spdxId": "urn:p",
+                "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+            }
+        ]
+
+        assert _three_part_spec_version("3.0", element_list) == "3.0.0"
+
     def test_a_two_part_context_with_nothing_else_to_go_on_settles_on_zero(self, tmp_path):
         """A document the action builds from nothing has no producer to ask,
         and .0 is at least a version the schema will read."""
