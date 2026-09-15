@@ -2611,10 +2611,18 @@ class TestSanitizeSpdx3Licenses:
     )
     def test_the_real_yocto_documents_do_not_move(self):
         """The issue says RPM-style strings matter most for the Yocto path.
-        They do not appear there: Yocto normalises licences itself, and all
-        200 expressions across the three published SPDX 3 images are already
-        valid. This is the guard that a future change to the sanitizer does
-        not start rewriting somebody's correct licences."""
+        They do not appear there: Yocto normalises licences itself, so every
+        expression it writes is already valid, and this is the guard that a
+        future change to the sanitizer does not start rewriting somebody's
+        correct licences.
+
+        What runs by default is the in-repo corpus, six per-recipe SPDX 2.2
+        documents carrying six expressions between them. That is thin, and it
+        is real Yocto output rather than something written to pass. The
+        measurement the issue quotes, 200 expressions all already valid, came
+        from the three published SPDX 3 images; point SBOMIFY_YOCTO_CORPUS at
+        a directory holding those to run the guard over them instead.
+        """
         # Asserted as well as skipped on: a guard that iterates an empty list
         # reports green precisely when it is not guarding.
         assert self.DOCUMENTS, f"{self.YOCTO} holds no *.spdx.json to check"
