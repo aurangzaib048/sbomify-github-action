@@ -125,7 +125,26 @@ Container images are supported via `DOCKER_IMAGE`, and a whole directory via `SO
 
 - **CycloneDX** 1.2–1.7 (JSON) — generate and process. Defaults to 1.6; override with `SPEC_VERSION`
 - **SPDX** 2.2 and 2.3 (JSON) — generate and process. Defaults to 2.3
-- **SPDX** 3.0.1 (JSON-LD) — process only; supply an existing document via `SBOM_FILE`
+- **SPDX** 3.0.0 and 3.0.1 (JSON-LD) — process only; supply an existing document via `SBOM_FILE`
+
+No tool generates SPDX 3, so `SPEC_VERSION: 3.0.1` with a lock file fails and says so.
+An SPDX 3 document supplied through `SBOM_FILE` is read, validated against the official
+schema for the version it declares, and written back at that version.
+
+## Action inputs
+
+Everything the action does is driven by environment variables, listed in the
+[configuration reference](https://sbomify.com/sbomify-action/configuration/). These few are
+also available as `with:` inputs:
+
+| Input | Environment variable | Description |
+| --- | --- | --- |
+| `working-dir` | `WORKING_DIR` | Directory to work in, relative to the repo root |
+| `component-purl` | `COMPONENT_PURL` | Override the component PURL in the SBOM |
+| `bom-type` | `BOM_TYPE` | `sbom` (default), `vex`, `cbom` or `hbom` |
+| `sbom-format` | `SBOM_FORMAT` | `cyclonedx` (default) or `spdx` |
+| `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3 |
+| `oidc-audience` | `OIDC_AUDIENCE` | Audience for trusted publishing; override for self-hosted |
 
 ## Documents
 

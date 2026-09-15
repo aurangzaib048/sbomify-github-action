@@ -112,7 +112,11 @@ _SPDX3_CONTEXT_RE = re.compile(r"spdx\.org/rdf/3")
 #: What a version looks like in a context URL. Both regexes below are built
 #: from it, because a context this module preserves and a version it cannot
 #: read off that same context is the disagreement it exists to prevent.
-_SPDX3_VERSION = r"\d+\.\d+\.\d+"
+#:
+#: Two parts or three: spdx.org/rdf/3.0/ is a real context, served and
+#: byte-identical to the 3.0.1 one today, so a document can legitimately
+#: carry a version with no patch number.
+_SPDX3_VERSION = r"\d+\.\d+(?:\.\d+)?"
 
 # Regex to extract version from context URL
 _SPDX3_VERSION_RE = re.compile(rf"spdx\.org/rdf/({_SPDX3_VERSION})/")
@@ -218,11 +222,77 @@ def is_spdx3(data: dict[str, Any]) -> bool:
     return False
 
 
-def extract_spdx3_version(data: dict[str, Any]) -> str | None:
-    """Extract the SPDX 3 spec version from the ``@context`` URL.
+def _stated_spec_version(node: Any, from_creation_info: bool = False) -> str | None:
+    """The ``specVersion`` a CreationInfo in *node* states.
 
-    Returns e.g. ``"3.0.1"`` or ``None``.
+    Only from a CreationInfo, either one that names its type or one reached as
+    a ``creationInfo`` value. That is the only place 3.0.1 puts the property,
+    and this answer chooses the schema the whole document is held to, so a
+    ``specVersion`` sitting on anything else must not speak for it.
     """
+    if isinstance(node, dict):
+        if from_creation_info or (node.get("type") or node.get("@type")) == "CreationInfo":
+            stated = node.get("specVersion")
+            if isinstance(stated, str) and stated.strip():
+                return stated.strip()
+        for key, value in node.items():
+            found = _stated_spec_version(value, key == "creationInfo")
+            if found:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _stated_spec_version(item, from_creation_info)
+            if found:
+                return found
+    return None
+
+
+def _document_spec_version(data: dict[str, Any]) -> str | None:
+    """The ``specVersion`` the SpdxDocument itself states, inline or by reference.
+
+    A graph can hold several CreationInfos, and they need not agree: a merged
+    document, or one whose producer copied in an element written elsewhere,
+    carries the other document's version on that element. Taking the first one
+    the scan reaches then lets an element speak for the whole document, and
+    which element that is depends on serialization order.
+    """
+    graph = data.get("@graph", data)
+    if isinstance(graph, dict):
+        graph = [graph]
+    if not isinstance(graph, list):
+        return None
+    elements = [e for e in graph if isinstance(e, dict)]
+    by_id = {e.get("@id") or e.get("spdxId"): e for e in elements if e.get("@id") or e.get("spdxId")}
+    for element in elements:
+        if (element.get("type") or element.get("@type")) != "SpdxDocument":
+            continue
+        creation_info = element.get("creationInfo")
+        if isinstance(creation_info, str):
+            creation_info = by_id.get(creation_info)
+        stated = _stated_spec_version(creation_info, from_creation_info=True)
+        if stated:
+            return stated
+    return None
+
+
+def extract_spdx3_version(data: dict[str, Any]) -> str | None:
+    """The SPDX 3 spec version the document claims. e.g. ``"3.0.1"``.
+
+    The document's own ``specVersion`` comes first. ``CreationInfo_props``
+    requires it and every Element requires a creationInfo, so a conformant
+    document always states it, and it is the normative claim rather than a
+    hint.
+
+    The ``@context`` is the fallback, and only a fallback, because it can be
+    an unversioned alias: ``spdx.org/rdf/3.0/`` resolves and is byte-identical
+    to the 3.0.1 context today, so what it means depends on when the document
+    was written. A document carrying only that and no specVersion is already
+    invalid, which is the only case this order leaves ambiguous.
+    """
+    stated = _document_spec_version(data) or _stated_spec_version(data.get("@graph", data))
+    if stated:
+        return stated
+
     ctx = data.get("@context")
     candidates: list[str] = []
     if isinstance(ctx, str):
@@ -1091,7 +1161,49 @@ def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
     return found
 
 
-def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url: str | None) -> None:
+def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any]]) -> str:
+    """A ``specVersion`` the schema accepts, from a context that may be short.
+
+    ``spdx.org/rdf/3.0/`` is a real context, so the version read off a URL can
+    be two parts, and ``specVersion`` is a semver pattern that two parts do not
+    match. The producer's own CreationInfo answers first: a document written
+    against 3.0.1 under the 3.0 context is saying 3.0.1, and taking its word
+    keeps what the action mints on the version the rest of the document is on.
+    Only a document that states no patch number anywhere settles on ``.0``.
+    """
+    if from_context.count(".") == 2:
+        return from_context
+    for creation_info in _creation_infos_in(element_list):
+        if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
+            continue
+        stated = creation_info.get("specVersion")
+        if isinstance(stated, str) and stated.startswith(f"{from_context}.") and stated.count(".") == 2:
+            return stated
+    return f"{from_context}.0"
+
+
+def _fully_qualified_context(context_url: str, declared: str | None) -> str:
+    """The context URL for *declared*, when the document offered a line alias.
+
+    ``spdx.org/rdf/3.0/spdx-context.jsonld`` is served and byte-identical to
+    the 3.0.1 one, so a producer may legitimately point at it, but the schemas
+    pin ``@context`` with a const to a fully qualified URL and reject the
+    alias. Writing it through meant the action emitted documents its own
+    validation step then refused.
+
+    Resolving it states no more than the document already did: the version
+    comes from the document's own CreationInfos, and the two URLs address the
+    same context.
+    """
+    if not declared:
+        return context_url
+    match = _SPDX3_VERSION_RE.search(context_url)
+    if not match or match.group(1) == declared:
+        return context_url
+    return f"https://spdx.org/rdf/{declared}/spdx-context.jsonld"
+
+
+def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url: str | None) -> str | None:
     """Make what the action mints declare the document's own spec version.
 
     :func:`make_spdx3_creation_info` hardcodes 3.0.1 because it has no document
@@ -1103,16 +1215,20 @@ def _align_minted_spec_versions(element_list: list[dict[str, Any]], context_url:
     Only the ones the action minted are touched, and they are identifiable
     precisely because make_spdx3_creation_info names the action as their
     creator. A CreationInfo the producer wrote keeps whatever it says.
+
+    Returns the version everything minted now states, so the caller can hold
+    the ``@context`` to the same answer.
     """
     if not context_url:
-        return
+        return None
     match = _SPDX3_VERSION_RE.search(context_url)
     if not match:
-        return
-    declared = match.group(1)
+        return None
+    declared = _three_part_spec_version(match.group(1), element_list)
     for creation_info in _creation_infos_in(element_list):
         if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
             creation_info["specVersion"] = declared
+    return declared
 
 
 def _add_the_action_agent(element_list: list[dict[str, Any]]) -> None:
@@ -1214,7 +1330,8 @@ def write_spdx3_file(
     _licenses_as_relationships(element_list)
     _add_the_action_agent(element_list)
     # After the agent, so the one it mints for itself is aligned too.
-    _align_minted_spec_versions(element_list, context_url)
+    declared = _align_minted_spec_versions(element_list, context_url)
+    context_url = _fully_qualified_context(context_url, declared)
 
     complete_dict = {"@context": context_url, "@graph": element_list}
 
