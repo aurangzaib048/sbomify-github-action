@@ -131,13 +131,14 @@ file or a container image in the first place.
 | --- | --- | --- | --- |
 | CycloneDX (JSON) | 1.2–1.7 | 1.3–1.7 | 1.6 |
 | SPDX (JSON) | 2.2, 2.3 | 2.2, 2.3 | 2.3 |
-| SPDX (JSON-LD) | none | 3.0.0, 3.0.1 | — |
+| SPDX (JSON-LD) | additional packages only | 3.0.0, 3.0.1 | — |
 
-**SPDX 3 is ingest and rewrite only.** No tool generates it: Syft is the only SPDX
-generator here and it stops at 2.3. So `SPEC_VERSION: 3.0.1` with a lock file fails
-and says why. Supply an existing document through `SBOM_FILE` instead; it is validated
-against the official schema for the version it declares and written back at that
-version, not relabelled.
+**SPDX 3 cannot be scanned out of your code.** Syft is the only SPDX generator here
+and it stops at 2.3, so `SPEC_VERSION: 3.0.1` with a lock file or an image fails and
+says why. Two routes still produce it. Supply an existing document through `SBOM_FILE`
+and it is validated against the official schema for the version it declares, then
+written back at that version rather than relabelled. Or set `LOCK_FILE: none` and list
+the packages in `ADDITIONAL_PACKAGES`, which builds a 3.0.1 document from that list.
 
 **CycloneDX 1.2 is the one gap in the other direction.** It can be generated, but no
 1.2 schema ships here, so a 1.2 document goes out unchecked. Pick 1.3 or higher if you
