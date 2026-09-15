@@ -475,6 +475,27 @@ class TestAnUnknownSPDX3VersionFails(unittest.TestCase):
         self.assertIn("3.1.0", result.error_message)
         self.assertIn("3.0.1", result.error_message)
 
+    def test_it_does_not_refuse_a_version_it_claims_to_accept(self):
+        """The wording came from the backend, where "3.0.x" is true because
+        its schema takes a semver pattern. Here a schema is chosen by exact
+        key, so 3.0.2 is refused, and the sentence was refusing a 3.0.x while
+        claiming to accept 3.0.x."""
+        result = validate_sbom_data({"@graph": []}, "spdx", "3.0.2")
+
+        self.assertIs(result.valid, False)
+        self.assertNotIn("3.0.x", result.error_message)
+
+    def test_the_list_is_what_is_bundled_rather_than_a_written_out_one(self):
+        """So bundling a version updates the sentence with it."""
+        from sbomify_action.validation import SPDX_SCHEMAS
+
+        message = validate_sbom_data({"@graph": []}, "spdx", "3.1.0").error_message
+
+        for version in SPDX_SCHEMAS:
+            if version == "3.0":  # the alias key, not a version anyone sends
+                continue
+            self.assertIn(version, message)
+
     def test_an_unbundled_spdx_2_version_still_only_skips(self):
         """2.1 predates every reader here and nothing claims to check it, so
         this deliberately keeps the old behaviour."""
@@ -531,10 +552,19 @@ class TestSPDX31IsRejectedByName(unittest.TestCase):
 
     def test_the_wording_matches_the_backend(self):
         """A user who hits both the action and the upload should hear one
-        answer, not two."""
+        answer, not two.
+
+        Matched in shape rather than character for character. The backend says
+        it accepts "3.0.x", which is true there because its schema takes a
+        semver pattern; here a schema is chosen by exact key, so repeating the
+        phrase meant refusing a 3.0.x while claiming to accept 3.0.x. The
+        version list is the one part that has to be this tool's own, and a
+        message that contradicts the tool it lives in is worse than one that
+        differs from its sibling.
+        """
         result = self._validate(self._document("3.1", None))
 
-        self.assertIn("sbomify accepts SPDX 2.2, 2.3 and 3.0.x", result.error_message)
+        self.assertIn("is not supported. sbomify accepts SPDX", result.error_message)
         self.assertIn("BSI TR-03183-2", result.error_message)
 
     def test_301_still_processes(self):
