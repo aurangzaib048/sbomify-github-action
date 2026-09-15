@@ -3,6 +3,7 @@
 import contextlib
 import copy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -2538,7 +2539,12 @@ class TestSanitizeSpdx3Licenses:
     before validating generated SPDX.
     """
 
-    YOCTO = Path("/Users/ranaaurangzaib/PycharmProjects/sbomify/.qa-tmp/yocto")
+    #: The published Yocto SBOMs, if whoever is running this has them. They are
+    #: release artefacts of tens of megabytes and are not in the repo, so the
+    #: guard points at a directory instead of hardcoding one machine's layout:
+    #: set SBOMIFY_YOCTO_CORPUS, or drop them in tests/test-data/yocto. Without
+    #: either the test skips, and says why.
+    YOCTO = Path(os.environ.get("SBOMIFY_YOCTO_CORPUS") or Path(__file__).parent / "test-data" / "yocto")
 
     @staticmethod
     def _document(*expressions: str) -> dict:
@@ -2593,7 +2599,10 @@ class TestSanitizeSpdx3Licenses:
         assert sanitize_spdx_licenses(data) == 1
         assert data["packages"][0]["licenseDeclared"].startswith("LicenseRef-")
 
-    @pytest.mark.skipif(not YOCTO.is_dir(), reason="published Yocto SBOMs not present")
+    @pytest.mark.skipif(
+        not YOCTO.is_dir(),
+        reason="published Yocto SBOMs not present; set SBOMIFY_YOCTO_CORPUS to a directory holding them",
+    )
     def test_the_real_yocto_documents_do_not_move(self):
         """The issue says RPM-style strings matter most for the Yocto path.
         They do not appear there: Yocto normalises licences itself, and all
