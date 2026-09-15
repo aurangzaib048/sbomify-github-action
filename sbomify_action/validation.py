@@ -49,6 +49,15 @@ CDX_SCHEMAS = {
 SPDX_SCHEMAS = {
     "2.2": SPDX_SCHEMA_DIR / "spdx-2.2.schema.json",
     "2.3": SPDX_SCHEMA_DIR / "spdx-2.3.schema.json",
+    # 3.0 and 3.0.1 are separate documents, not a version label on one. 3.0.1
+    # added IndividualElement, and renamed SpdxDocument.imports to import,
+    # Build.build_parameters to build_parameter, and File.software_contentType
+    # to contentType. Renames are what make the two schemas disagree rather
+    # than merely differ: a File carrying software_contentType is valid under
+    # 3.0.0 and refused by 3.0.1, and one carrying contentType is refused by
+    # 3.0.0. tests/test_validation.py asserts all four cells. Both files are
+    # the official shacl2code output from spdx.org/schema/<version>/.
+    "3.0.0": SPDX_SCHEMA_DIR / "spdx-3.0.0.schema.json",
     "3.0.1": SPDX_SCHEMA_DIR / "spdx-3.0.1.schema.json",
 }
 
@@ -200,6 +209,20 @@ def validate_sbom_data(
     schema = get_schema_for_format(sbom_format, spec_version)
 
     if schema is None:
+        if sbom_format == "spdx" and spec_version.startswith("3"):
+            # A skip here is how every SPDX 3 document reached the upload
+            # unchecked while the README said otherwise. Refusing instead means
+            # a version we have never seen is a loud failure rather than a
+            # silent pass, which is the safer default for a format still
+            # adding versions.
+            supported = ", ".join(v for v in SPDX_SCHEMAS if v.startswith("3"))
+            message = f"No bundled schema for SPDX {spec_version}. Supported SPDX 3 versions: {supported}."
+            logger.error(message)
+            return ValidationResult.failure(
+                sbom_format=sbom_format,
+                spec_version=spec_version,
+                error_message=message,
+            )
         # No schema available - skip validation but log warning
         reason = f"No schema available for {sbom_format} {spec_version}"
         logger.warning(f"{reason}, unable to validate SBOM")
