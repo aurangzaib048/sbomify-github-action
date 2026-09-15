@@ -554,7 +554,11 @@ def _capture_unmodelled_purposes(payload: "Spdx3Payload", elem: dict[str, Any]) 
     if isinstance(additional, list):
         unknown = [a for a in additional if isinstance(a, str) and a.lower() not in _SW_PURPOSES]
         if unknown:
-            kept["software_additionalPurpose"] = unknown
+            # The whole list, not just the strangers. Restoring is a plain
+            # overwrite of the serialized value, so keeping only the unknown
+            # ones dropped every purpose the library did understand:
+            # ["library", "specification"] came back as ["specification"].
+            kept["software_additionalPurpose"] = [a for a in additional if isinstance(a, str)]
 
     _keep(payload, elem, kept)
 
@@ -639,6 +643,27 @@ def parse_spdx3_file(file_path: str) -> Spdx3Payload:
     return parse_spdx3_data(data)
 
 
+def _declared_context(context: Any) -> str | None:
+    """The SPDX 3 context URL a document declares, whatever shape it is in.
+
+    JSON-LD allows a string, a list or an object, and a document that wraps its
+    context in a list is as conformant as one that does not.
+    """
+    candidates: list[str]
+    if isinstance(context, str):
+        candidates = [context]
+    elif isinstance(context, list):
+        candidates = [c for c in context if isinstance(c, str)]
+    elif isinstance(context, dict):
+        candidates = [v for v in context.values() if isinstance(v, str)]
+    else:
+        return None
+    for candidate in candidates:
+        if _SPDX3_CONTEXT_RE.search(candidate):
+            return candidate
+    return None
+
+
 def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
     """Parse SPDX 3 JSON-LD data (already loaded) into an :class:`Spdx3Payload`.
 
@@ -665,9 +690,11 @@ def parse_spdx3_data(data: dict[str, Any]) -> Spdx3Payload:
 
     # Second pass: parse all other elements
     payload = Spdx3Payload()
-    context = data.get("@context")
-    if isinstance(context, str) and _SPDX3_CONTEXT_RE.search(context):
-        payload.context_url = context
+    # Matching is_spdx3 and extract_spdx3_version, both of which read every
+    # shape JSON-LD allows here. Taking the string form alone left context_url
+    # None for a list or dict context, and the writer then fell back to the
+    # current release: the relabelling this is here to prevent.
+    payload.context_url = _declared_context(data.get("@context"))
 
     for elem in graph:
         if not isinstance(elem, dict):
@@ -1021,11 +1048,22 @@ def _add_the_action_agent(element_list: list[dict[str, Any]]) -> None:
     naming = [ci for ci in _creation_infos_in(element_list) if _ACTION_AGENT_ID in (ci.get("createdBy") or [])]
     if not naming or any(e.get("spdxId") == _ACTION_AGENT_ID for e in element_list):
         return
-    # Taken from a CreationInfo that names the agent, so it does not declare a
-    # different spec version from the elements it is named on.
+    # Both taken from a CreationInfo that names the agent, so it declares
+    # neither a different spec version nor a different moment from the
+    # elements it is named on.
+    #
+    # The timestamp especially: minting one here made two runs over the same
+    # input differ by a line, which is a diff a user has to read and discard
+    # every time. The agent describes elements that were created at the
+    # document's own moment, so that is the honest value as well as the stable
+    # one. Only a document that states no time at all falls back to now.
     spec_version = next(
         (ci["specVersion"] for ci in naming if isinstance(ci.get("specVersion"), str)),
         "3.0.1",
+    )
+    created = next(
+        (ci["created"] for ci in naming if isinstance(ci.get("created"), str) and ci["created"]),
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     element_list.append(
         {
@@ -1035,7 +1073,7 @@ def _add_the_action_agent(element_list: list[dict[str, Any]]) -> None:
             "creationInfo": {
                 "type": "CreationInfo",
                 "specVersion": spec_version,
-                "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "created": created,
                 "createdBy": [_ACTION_AGENT_ID],
             },
         }
