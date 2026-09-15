@@ -1443,3 +1443,62 @@ class TestActionYmlExposesTheFormatKnobs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheInputsSurviveBeingOmitted(unittest.TestCase):
+    """GitHub Actions passes an omitted input as an empty string, not as
+    absent, so `env: X: ${{ inputs.x }}` sets X="" rather than leaving it
+    unset. A knob whose CLI option validates its value has to declare a
+    default here or it breaks the moment somebody does not set it.
+    """
+
+    @staticmethod
+    def _inputs() -> dict:
+        import yaml
+
+        return yaml.safe_load((Path(__file__).parent.parent / "action.yml").read_text())["inputs"]
+
+    def test_sbom_format_defaults_rather_than_arriving_empty(self):
+        """SBOM_FORMAT feeds a click.Choice, which refuses "" instead of
+        falling back to cyclonedx."""
+        self.assertEqual(self._inputs()["sbom-format"].get("default"), "cyclonedx")
+
+    def test_spec_version_defaults_to_empty_on_purpose(self):
+        """Its per-format default lives in the CLI: 1.6 for CycloneDX, 2.3 for
+        SPDX. Empty is how the input says "whichever the format wants"."""
+        self.assertEqual(self._inputs()["spec-version"].get("default"), "")
+
+    def test_every_input_with_a_validated_cli_option_has_a_default(self):
+        """bom-type is the precedent: it feeds a click.Choice and declares one."""
+        for name in ("bom-type", "sbom-format"):
+            with self.subTest(input=name):
+                self.assertIn("default", self._inputs()[name])
+
+
+class TestTheThreeZeroLineIsNotOfferedAsARoute(unittest.TestCase):
+    """ "3.0" is a key in SPDX_SCHEMAS so an alias-context document reaches a
+    schema at all. It is not a version anyone can send: both official schemas
+    pin @context with a const to their fully qualified URL, so a document
+    declaring the bare line fails whichever schema it is held to.
+    """
+
+    def _error(self, spec_version: str) -> str:
+        config = Config(
+            token="test-token",
+            component_id="test-component",
+            lock_file="/path/to/requirements.txt",
+            sbom_format="spdx",
+            spec_version=spec_version,
+        )
+        with self.assertRaises(ConfigurationError) as cm:
+            config.validate()
+        return str(cm.exception)
+
+    def test_it_is_not_sent_to_sbom_file(self):
+        message = self._error("3.0")
+
+        self.assertIn("Nor is it read", message)
+        self.assertNotIn("pass an existing 3.0 document", message)
+
+    def test_the_versions_that_are_readable_still_are(self):
+        self.assertIn("pass an existing 3.0.1 document", self._error("3.0.1"))
