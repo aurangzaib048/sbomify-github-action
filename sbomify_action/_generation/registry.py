@@ -374,10 +374,12 @@ def _no_generator_message(input: GenerationInput) -> str:
     old message listed it beside ``2.3`` as though they were two versions.
     """
     generatable = SPDX_VERSIONS if input.output_format == "spdx" else CYCLONEDX_VERSIONS
-    message = (
-        f"Nothing here generates {format_display_name(input.output_format)} "
-        f"{input.spec_version}. Generatable versions: {', '.join(generatable)}."
-    )
+    display = format_display_name(input.output_format)
+    # A caller that asked for no particular version renders as "CycloneDX None"
+    # otherwise, which names a version nobody requested and sends the reader
+    # looking for where they set it.
+    asked_for = f" {input.spec_version}" if input.spec_version else " at any version this input allows"
+    message = f"Nothing here generates {display}{asked_for}. Generatable versions: {', '.join(generatable)}."
     if input.output_format == "spdx" and str(input.spec_version).startswith("3"):
         # The likeliest way to arrive here, and the only one where the answer
         # is a different input rather than a different version.
