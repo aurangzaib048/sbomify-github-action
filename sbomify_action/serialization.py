@@ -1343,7 +1343,15 @@ def sanitize_spdx_licenses(data: dict[str, Any]) -> int:
     # Relationship to a simplelicensing_LicenseExpression element in @graph.
     # Walked the 2.x way it reports zero repairs having looked at nothing,
     # which reads as "nothing to fix" on every call site.
-    for element in data.get("@graph", []):
+    # A single node object rather than an array: JSON-LD allows it, the SPDX 3
+    # schemas pin @graph to an array, so a document shaped that way fails
+    # validation whatever happens here. Read anyway, because iterating a dict
+    # walks its keys and reports "nothing to fix" about a document nobody
+    # looked at.
+    graph = data.get("@graph", [])
+    if isinstance(graph, dict):
+        graph = [graph]
+    for element in graph:
         if not isinstance(element, dict) or element.get("type") != "simplelicensing_LicenseExpression":
             continue
         sanitized_count += _sanitize_license_field(
