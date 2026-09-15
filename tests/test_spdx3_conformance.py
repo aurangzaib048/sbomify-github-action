@@ -802,3 +802,36 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
 
         plain = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
         assert set(self._spec_versions(plain["@graph"])) == {"3.0.1"}
+
+
+class TestADataLicenseTheDocumentPointsAtRatherThanInlines:
+    """JSON-LD lets a document inline its CreationInfo or reference one, and
+    this repo's own fixtures reference: ``"creationInfo": "_:creationinfo"``.
+    Reading only the inline form meant a legacy dataLicense on the referenced
+    element was stripped by the normalisation and never put back.
+    """
+
+    def _written(self, value: str, tmp_path) -> dict:
+        source = json.loads(FIXTURE.read_text())
+        for element in source["@graph"]:
+            if element.get("type") == "CreationInfo":
+                element["dataLicense"] = value
+        return _write(source, tmp_path)
+
+    def test_it_survives(self, tmp_path):
+        written = self._written("https://spdx.org/licenses/CC0-1.0", tmp_path)
+
+        document = _elements(written, "SpdxDocument")[0]
+        assert document["dataLicense"] == "https://spdx.org/licenses/CC0-1.0"
+
+    def test_a_bare_id_is_written_the_way_3_0_1_spells_it(self, tmp_path, validator):
+        """The draft location holds a bare id. dataLicense on SpdxDocument
+        resolves to a licence IRI, so carrying the value forward has to carry
+        its spelling forward or the document it lands in fails the schema."""
+        written = self._written("CC0-1.0", tmp_path)
+
+        assert _errors(validator, written) == []
+        assert _elements(written, "SpdxDocument")[0]["dataLicense"] == "https://spdx.org/licenses/CC0-1.0"
+
+    def test_a_document_that_declared_none_still_gains_none(self, round_tripped):
+        assert "dataLicense" not in _elements(round_tripped, "SpdxDocument")[0]
