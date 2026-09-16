@@ -22,7 +22,7 @@ inputs:
     # refuse it rather than fall back to cyclonedx.
     default: 'cyclonedx'
   spec-version:
-    description: 'Spec version to generate: CycloneDX 1.2-1.7 (default 1.6) or SPDX 2.2/2.3 (default 2.3). SPDX 3 is read and written but not generated, so supply one via SBOM_FILE.'
+    description: 'Spec version to generate: CycloneDX 1.2-1.7 (default 1.6) or SPDX 2.2/2.3 (default 2.3). SPDX 3 cannot be scanned out of your code: supply one via SBOM_FILE, or set 3.0.1 with LOCK_FILE=none to build one from ADDITIONAL_PACKAGES. Ignored when SBOM_FILE names a real file.'
     required: false
     # No default on purpose: the per-format default lives in the CLI, which
     # picks 1.6 for CycloneDX and 2.3 for SPDX. Empty is how it says

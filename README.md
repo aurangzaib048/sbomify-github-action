@@ -123,13 +123,47 @@ Container images are supported via `DOCKER_IMAGE`, and a whole directory via `SO
 
 ## Format support
 
-- **CycloneDX** 1.2–1.7 (JSON) — generate and process. Defaults to 1.6; override with `SPEC_VERSION`
-- **SPDX** 2.2 and 2.3 (JSON) — generate and process. Defaults to 2.3
-- **SPDX** 3.0.0 and 3.0.1 (JSON-LD) — process only; supply an existing document via `SBOM_FILE`
+Generating and reading are not the same list. Everything here is read, validated,
+augmented, enriched and written back; only some of it can be produced from a lock
+file or a container image in the first place.
 
-No tool generates SPDX 3, so `SPEC_VERSION: 3.0.1` with a lock file fails and says so.
-An SPDX 3 document supplied through `SBOM_FILE` is read, validated against the official
-schema for the version it declares, and written back at that version.
+| Format | Generate | Validate | Default |
+| --- | --- | --- | --- |
+| CycloneDX (JSON) | 1.2–1.7 | 1.3–1.7 | 1.6 |
+| SPDX (JSON) | 2.2, 2.3 | 2.2, 2.3 | 2.3 |
+| SPDX (JSON-LD) | additional packages only | 3.0.0, 3.0.1 | — |
+
+**SPDX 3 cannot be scanned out of your code.** Syft is the only SPDX generator here
+and it stops at 2.3, so `SPEC_VERSION: 3.0.1` with a lock file or an image fails and
+says why. Two routes still produce it. Supply an existing document through `SBOM_FILE`
+and it is validated against the official schema for the version it declares, then
+written back at that version rather than relabelled. Or set `LOCK_FILE: none` and list
+the packages in `ADDITIONAL_PACKAGES`, which builds a 3.0.1 document from that list.
+
+**CycloneDX 1.2 is the one gap in the other direction.** It can be generated, but no
+1.2 schema ships here, so a 1.2 document goes out unchecked. Pick 1.3 or higher if you
+want the schema check, and 1.6 or higher if you want the BSI floor below.
+
+Override the version with `SPEC_VERSION`, or the `spec-version` input.
+
+### Which standard is which
+
+Worth knowing if a procurement clause cites "the ISO SBOM standard", because the
+version you pick decides whether you meet it.
+
+- **ISO/IEC 5962:2021 is SPDX 2.2.1**, published August 2021. It is the only SPDX
+  version with an ISO number. See the SPDX project's own
+  [v2.2.1 release notes](https://github.com/spdx/spdx-spec/releases/tag/v2.2.1).
+- **SPDX 3.0 is an OMG specification**, `formal/24-11-01`, March 2025. See
+  [omg.org/spec/SPDX](https://www.omg.org/spec/SPDX/). It is not covered by
+  ISO/IEC 5962:2021.
+- **[BSI TR-03183-2](https://sbomify.com/compliance/bsi-tr-03183/) v2.1.0 §4** asks
+  for SPDX 3.0.1 or higher, or CycloneDX 1.6 or higher, for newly generated SBOMs.
+  An SPDX 3.0 document misses that floor by one patch digit, and 3.0 is what syft,
+  Microsoft sbom-tool, JFrog Xray and Yocto 5.x emit.
+
+So SPDX 2.3 is the ISO-adjacent choice this action can generate, and CycloneDX 1.6
+is the one that clears the BSI floor without needing a document from elsewhere.
 
 ## Action inputs
 
@@ -143,7 +177,7 @@ also available as `with:` inputs:
 | `component-purl` | `COMPONENT_PURL` | Override the component PURL in the SBOM |
 | `bom-type` | `BOM_TYPE` | `sbom` (default), `vex`, `cbom` or `hbom` |
 | `sbom-format` | `SBOM_FORMAT` | `cyclonedx` (default) or `spdx` |
-| `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3 |
+| `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3, or SPDX 3.0.1 with `LOCK_FILE: none`. Ignored when `SBOM_FILE` names a real file |
 | `oidc-audience` | `OIDC_AUDIENCE` | Audience for trusted publishing; override for self-hosted |
 
 ## Documents
