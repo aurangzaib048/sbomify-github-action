@@ -1339,6 +1339,33 @@ def sanitize_spdx_licenses(data: dict[str, Any]) -> int:
                 count += 1
         return count
 
+    # An SPDX 3 document has none of the keys below: it states a licence as a
+    # Relationship to a simplelicensing_LicenseExpression element in @graph.
+    # Walked the 2.x way it reports zero repairs having looked at nothing,
+    # which reads as "nothing to fix" on every call site.
+    # A single node object rather than an array: JSON-LD allows it, the SPDX 3
+    # schemas pin @graph to an array, so a document shaped that way fails
+    # validation whatever happens here. Read anyway, because iterating a dict
+    # walks its keys and reports "nothing to fix" about a document nobody
+    # looked at.
+    graph = data.get("@graph", [])
+    if isinstance(graph, dict):
+        graph = [graph]
+    for element in graph:
+        if not isinstance(element, dict):
+            continue
+        # JSON-LD states the type as `type` under the SPDX 3 context and as
+        # `@type` expanded. spdx3.py reads both, and the component id below
+        # already reads both spellings of the id; reading one spelling of the
+        # type here skips a conforming document and reports nothing to fix.
+        if (element.get("type") or element.get("@type")) != "simplelicensing_LicenseExpression":
+            continue
+        sanitized_count += _sanitize_license_field(
+            element,
+            "simplelicensing_licenseExpression",
+            component=element.get("spdxId") or element.get("@id"),
+        )
+
     # Process packages
     for package in data.get("packages", []):
         pkg_name = package.get("name")
