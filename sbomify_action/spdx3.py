@@ -670,9 +670,10 @@ def _capture_document_fields(
 ) -> None:
     """Carry the two document-level fields the draft model cannot hold.
 
-    ``dataLicense`` is read from the SpdxDocument, which is where 3.0.1 puts
-    it, and from the CreationInfo as a fallback, which is where this repo's
-    older fixtures and spdx-tools both put it.
+    ``dataLicense`` and ``profileConformance`` are both read from the
+    SpdxDocument, which is where 3.0.1 puts them, and from the CreationInfo as
+    a fallback, which is where this repo's older fixtures and spdx-tools both
+    put them.
     """
     data_license = elem.get("dataLicense")
     if not isinstance(data_license, str) or not data_license:
@@ -694,6 +695,16 @@ def _capture_document_fields(
         payload.document_data_license = _as_license_iri(data_license)
 
     profiles = elem.get("profileConformance")
+    if not profiles:
+        # The draft location again. spdx-tools puts conformance on the
+        # CreationInfo as ``profile``, real producers emit it there, and the
+        # normalisation strips it from every CreationInfo on the way out. Read
+        # here it survives as the property 3.0.1 actually has; not read, the
+        # document silently stops claiming a conformance its author wrote.
+        ci = elem.get("creationInfo")
+        if isinstance(ci, str) and raw_creation_infos:
+            ci = raw_creation_infos.get(ci)
+        profiles = ci.get("profile") if isinstance(ci, dict) else None
     if isinstance(profiles, str):
         profiles = [profiles]
     if isinstance(profiles, list):
@@ -775,8 +786,14 @@ def _declared_context(context: Any) -> str | None:
     else:
         return None
     for candidate in candidates:
-        if _SPDX3_CONTEXT_URL_RE.fullmatch(candidate.strip()):
-            return candidate.strip()
+        cleaned = candidate.strip()
+        if not _SPDX3_CONTEXT_URL_RE.fullmatch(cleaned):
+            continue
+        # The schemas pin @context to the https form, so what an http one
+        # names is the version, not the scheme it happens to be written with.
+        if cleaned.startswith("http://"):
+            cleaned = "https://" + cleaned[len("http://") :]
+        return cleaned
     return None
 
 
@@ -1042,6 +1059,30 @@ _LICENSE_SET_JOINERS = {
 _ACTION_AGENT_ID = "https://sbomify.com/agents/sbomify-action"
 
 
+def _binds_looser_than(text: str, joiner: str) -> bool:
+    """Whether *text* carries an operator outside parentheses that is not *joiner*.
+
+    SPDX binds AND tighter than OR, so joining members without parentheses
+    silently re-reads the expression: a disjunction inside a conjunction comes
+    back as "MIT OR Apache-2.0 AND GPL-2.0-only", which grants MIT on its own
+    and is a different licence claim from the one the producer wrote.
+
+    Depth-aware because a member may already be parenthesised, and
+    space-delimited because an SPDX id cannot contain a space.
+    """
+    depth = 0
+    for index, character in enumerate(text):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif depth == 0:
+            for operator in _LICENSE_SET_JOINERS.values():
+                if operator != joiner and text.startswith(operator, index):
+                    return True
+    return False
+
+
 def _license_expression_text(value: Any) -> str | None:
     """The expression a serialized spdx-tools licence object denotes.
 
@@ -1059,7 +1100,14 @@ def _license_expression_text(value: Any) -> str | None:
         members = value.get("member") or value.get("members") or []
         if isinstance(members, (str, dict)):
             members = [members]
-        kept = [text for text in (_license_expression_text(m) for m in members) if text]
+        kept = []
+        for member in members:
+            text = _license_expression_text(member)
+            if not text:
+                continue
+            if _binds_looser_than(text, joiner):
+                text = f"({text})"
+            kept.append(text)
         return joiner.join(kept) if kept else None
     if ltype in ("NoAssertionLicense", "NoneLicense"):
         return None
@@ -1161,6 +1209,27 @@ def _creation_infos_in(node: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _document_creation_info_first(element_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every CreationInfo in *element_list*, the SpdxDocument's one leading.
+
+    Serialization order otherwise decides which element speaks for a document
+    that holds several disagreeing CreationInfos.
+    """
+    ordered: list[dict[str, Any]] = []
+    document = next((e for e in element_list if e.get("type") == "SpdxDocument"), None)
+    if document is not None:
+        creation_info = document.get("creationInfo")
+        if isinstance(creation_info, str):
+            creation_info = next(
+                (e for e in element_list if (e.get("@id") or e.get("spdxId")) == creation_info),
+                None,
+            )
+        if isinstance(creation_info, dict):
+            ordered.append(creation_info)
+    ordered.extend(_creation_infos_in(element_list))
+    return ordered
+
+
 def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any]]) -> str:
     """A ``specVersion`` the schema accepts, from a context that may be short.
 
@@ -1170,10 +1239,15 @@ def _three_part_spec_version(from_context: str, element_list: list[dict[str, Any
     against 3.0.1 under the 3.0 context is saying 3.0.1, and taking its word
     keeps what the action mints on the version the rest of the document is on.
     Only a document that states no patch number anywhere settles on ``.0``.
+
+    The SpdxDocument is asked before the rest of the graph, for the reason
+    :func:`extract_spdx3_version` asks it: a merged document carries another
+    document's version on the element it took, and the answer here picks both
+    the ``@context`` that gets written and the schema the result is held to.
     """
     if from_context.count(".") == 2:
         return from_context
-    for creation_info in _creation_infos_in(element_list):
+    for creation_info in _document_creation_info_first(element_list):
         if _ACTION_AGENT_ID in (creation_info.get("createdBy") or []):
             continue
         stated = creation_info.get("specVersion")

@@ -350,6 +350,93 @@ class TestRelationshipTypesSurvive:
         ]
 
 
+class TestANestedLicenceSetKeepsItsMeaning:
+    """SPDX binds AND tighter than OR, so joining set members without
+    parentheses re-reads the expression rather than writing it out. A
+    disjunction inside a conjunction came back granting one of its members on
+    its own, which is a different licence claim from the one the producer made.
+    """
+
+    @staticmethod
+    def _listed(identifier: str) -> dict:
+        return {"type": "ListedLicense", "licenseId": identifier}
+
+    def test_a_disjunction_inside_a_conjunction_is_parenthesised(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "ConjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "DisjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+    def test_a_conjunction_inside_a_disjunction_is_parenthesised(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "DisjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "ConjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "(MIT AND Apache-2.0) OR GPL-2.0-only"
+
+    def test_the_same_operator_stays_flat(self):
+        """AND is associative, so parenthesising there would only add noise."""
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {
+                "type": "ConjunctiveLicenseSet",
+                "member": [
+                    {
+                        "type": "ConjunctiveLicenseSet",
+                        "member": [self._listed("MIT"), self._listed("Apache-2.0")],
+                    },
+                    self._listed("GPL-2.0-only"),
+                ],
+            }
+        )
+
+        assert expression == "MIT AND Apache-2.0 AND GPL-2.0-only"
+
+    def test_a_member_that_is_already_an_expression_string_is_read_the_same_way(self):
+        """spdx3_license_from_string parks a verbatim expression on a licence
+        object, so a member can carry an operator without being a set."""
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {"type": "ConjunctiveLicenseSet", "member": ["MIT OR Apache-2.0", "GPL-2.0-only"]}
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+    def test_a_member_that_is_already_parenthesised_is_not_wrapped_twice(self):
+        from sbomify_action.spdx3 import _license_expression_text
+
+        expression = _license_expression_text(
+            {"type": "ConjunctiveLicenseSet", "member": ["(MIT OR Apache-2.0)", "GPL-2.0-only"]}
+        )
+
+        assert expression == "(MIT OR Apache-2.0) AND GPL-2.0-only"
+
+
 class TestLicencesAreRelationshipsNotProperties:
     """3.0.1 has no declaredLicense or concludedLicense property: a licence is
     a Relationship to a licensing element. spdx-tools still models both as
@@ -702,6 +789,19 @@ class TestWhatTheProducerWroteSurvivesTheRoundTrip:
 
         assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
 
+    def test_an_http_context_is_written_back_as_https(self, tmp_path, validator):
+        """The schemas pin @context to the https form with a const, so what an
+        http one names is the version rather than the scheme. Echoing the
+        scheme back meant the action wrote a document its own validation step
+        then refused."""
+        source = json.loads(FIXTURE.read_text())
+        source["@context"] = "http://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+
+        written = _write(source, tmp_path)
+
+        assert written["@context"] == "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+        assert _errors(validator, written) == []
+
     def test_a_line_alias_context_is_resolved_to_the_one_the_schemas_pin(self, tmp_path, validator):
         """spdx.org/rdf/3.0/ is served and byte-identical to the 3.0.1 one, so
         a producer may point at it, but the schemas pin @context with a const
@@ -892,6 +992,52 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
         context only says which line."""
         assert self._minted_under("https://spdx.org/rdf/3.0/spdx-context.jsonld", tmp_path) == {"3.0.1"}
 
+    @pytest.mark.parametrize("inline", [True, False], ids=["inline", "referenced"])
+    def test_the_document_settles_the_patch_not_whichever_element_comes_first(self, inline, tmp_path):
+        """A merged document carries another document's version on the element
+        it took. Scanning the graph let that element pick the patch for the
+        whole document, which decides both the @context written and the schema
+        the result is held to."""
+        from sbomify_action.spdx3 import _three_part_spec_version
+
+        copied = {
+            "type": "software_Package",
+            "spdxId": "urn:copied",
+            "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+        }
+        if inline:
+            element_list = [
+                copied,
+                {
+                    "type": "SpdxDocument",
+                    "spdxId": "urn:doc",
+                    "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.1"},
+                },
+            ]
+        else:
+            element_list = [
+                copied,
+                {"type": "CreationInfo", "@id": "_:doc-ci", "specVersion": "3.0.1"},
+                {"type": "SpdxDocument", "spdxId": "urn:doc", "creationInfo": "_:doc-ci"},
+            ]
+
+        assert _three_part_spec_version("3.0", element_list) == "3.0.1"
+
+    def test_without_an_spdx_document_the_graph_still_answers(self, tmp_path):
+        """The preference is a preference. A fragment with no SpdxDocument
+        still has a producer worth asking."""
+        from sbomify_action.spdx3 import _three_part_spec_version
+
+        element_list = [
+            {
+                "type": "software_Package",
+                "spdxId": "urn:p",
+                "creationInfo": {"type": "CreationInfo", "specVersion": "3.0.0"},
+            }
+        ]
+
+        assert _three_part_spec_version("3.0", element_list) == "3.0.0"
+
     def test_a_two_part_context_with_nothing_else_to_go_on_settles_on_zero(self, tmp_path):
         """A document the action builds from nothing has no producer to ask,
         and .0 is at least a version the schema will read."""
@@ -915,6 +1061,57 @@ class TestWhatTheActionMintsAgreesWithTheDocument:
 
         plain = _write(json.loads(FIXTURE.read_text()), tmp_path / "b")
         assert set(self._spec_versions(plain["@graph"])) == {"3.0.1"}
+
+
+class TestAProfileStatedTheWayTheDraftStatesIt:
+    """spdx-tools puts conformance on the CreationInfo as ``profile``, real
+    producers emit it there, and the normalisation strips it from every
+    CreationInfo on the way out. A document that stated its conformance only
+    there silently stopped claiming it.
+    """
+
+    def _written(self, tmp_path, inline: bool) -> dict:
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document.pop("profileConformance", None)
+        if inline:
+            document["creationInfo"] = {"type": "CreationInfo", "specVersion": "3.0.1", "profile": ["core", "software"]}
+        else:
+            referenced = next(
+                e for e in source["@graph"] if (e.get("@id") or e.get("spdxId")) == document["creationInfo"]
+            )
+            referenced["profile"] = ["core", "software"]
+        return _write(source, tmp_path)
+
+    @pytest.mark.parametrize("inline", [True, False], ids=["inline", "referenced"])
+    def test_it_survives_as_the_property_3_0_1_has(self, inline, tmp_path):
+        written = self._written(tmp_path, inline)
+
+        assert _elements(written, "SpdxDocument")[0]["profileConformance"] == ["core", "software"]
+
+    def test_the_document_s_own_claim_still_wins(self, tmp_path):
+        """The fallback is a fallback. A document stating both keeps what it
+        put on the property 3.0.1 actually reads."""
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document["profileConformance"] = ["core"]
+        referenced = next(e for e in source["@graph"] if (e.get("@id") or e.get("spdxId")) == document["creationInfo"])
+        referenced["profile"] = ["core", "software", "licensing"]
+
+        written = _write(source, tmp_path)
+
+        assert _elements(written, "SpdxDocument")[0]["profileConformance"] == ["core"]
+
+    def test_a_document_that_claimed_neither_still_claims_neither(self, tmp_path):
+        """Conformance is a claim about what the document satisfies, so one
+        nobody wrote must not appear because the writer went looking."""
+        source = json.loads(FIXTURE.read_text())
+        document = next(e for e in source["@graph"] if e.get("type") == "SpdxDocument")
+        document.pop("profileConformance", None)
+
+        written = _write(source, tmp_path)
+
+        assert "profileConformance" not in _elements(written, "SpdxDocument")[0]
 
 
 class TestADataLicenseTheDocumentPointsAtRatherThanInlines:
