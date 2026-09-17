@@ -425,11 +425,13 @@ class TestPomVersions:
         assert version == "2.9.1"
         assert type(version) is str
 
-    def test_a_dependency_with_no_version_is_not_a_match(self, tmp_path: Path) -> None:
-        """An artifactId match alone is not enough; the row has to pin something."""
-        with pytest.raises(ManifestError, match="no-version-here"):
+    def test_a_declared_but_unpinned_dependency_says_which_it_is(self, tmp_path: Path) -> None:
+        """The artifact is right there in the file; "not found" sends the reader
+        hunting for something that is not missing. Usually a parent pom or a
+        dependencyManagement block supplies the version."""
+        with pytest.raises(ManifestError, match="declares no version"):
             tool_manifest._version_from_pom(self._pom(tmp_path), "no-version-here")
 
     def test_an_unknown_artifact_says_so(self, tmp_path: Path) -> None:
-        with pytest.raises(ManifestError, match="nothing-like-this"):
+        with pytest.raises(ManifestError, match="not found in"):
             tool_manifest._version_from_pom(self._pom(tmp_path), "nothing-like-this")
