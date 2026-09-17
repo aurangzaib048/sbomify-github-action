@@ -177,8 +177,12 @@ def _version_from_pom(path: Path, artifact: str) -> str:
     for dep in root.findall(".//m:dependency", ns):
         found = dep.find("m:artifactId", ns)
         version = dep.find("m:version", ns)
-        if found is not None and found.text == artifact and version is not None and version.text:
-            return version.text
+        # defusedxml ships no stubs, so its elements are Any and the text off
+        # one would leave this function returning Any. The annotation is where
+        # that stops, and the truthiness check below narrows it to str.
+        version_text: str | None = version.text if version is not None else None
+        if found is not None and found.text == artifact and version_text:
+            return version_text
     raise ManifestError(f"{artifact} not found in {path}")
 
 
