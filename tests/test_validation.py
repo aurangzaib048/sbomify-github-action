@@ -518,26 +518,24 @@ class TestALaterSPDX30PatchIsAccepted(unittest.TestCase):
             path.write_text(json.dumps(document))
             return validate_sbom_file_auto(str(path))
 
-    def test_a_302_document_is_valid(self):
-        result = self._validate("3.0.2", "3.0.2")
+    def test_a_302_document_with_the_301_context_is_valid(self):
+        """What the backend's own 3.0.2 test sends."""
+        result = self._validate("3.0.1", "3.0.2")
 
         self.assertIs(result.valid, True, result.error_message)
         self.assertEqual(result.spec_version, "3.0.2")
 
-    def test_a_302_document_with_the_301_context_is_valid(self):
-        """What the backend's own 3.0.2 test sends."""
-        self.assertIs(self._validate("3.0.1", "3.0.2").valid, True)
-
-    def test_it_is_still_held_to_the_schema(self):
-        result = self._validate("3.0.2", "3.0.2", {"type": "software_Package", "spdxId": "urn:x:p2", "nonsense": True})
+    def test_a_302_context_is_refused_as_the_backend_refuses_it(self):
+        """The 3.0.1 schema pins @context, and the backend keeps that pin."""
+        result = self._validate("3.0.2", "3.0.2")
 
         self.assertIs(result.valid, False)
+        self.assertNotIn("is not supported", result.error_message)
 
-    def test_the_context_is_relaxed_only_to_its_own_patch(self):
-        self.assertIs(self._validate("3.0.3", "3.0.2").valid, False)
+    def test_it_is_still_held_to_the_schema(self):
+        result = self._validate("3.0.1", "3.0.2", {"type": "software_Package", "spdxId": "urn:x:p2", "nonsense": True})
 
-    def test_the_301_schema_keeps_its_pin(self):
-        self.assertIs(self._validate("3.0.2", "3.0.1").valid, False)
+        self.assertIs(result.valid, False)
 
 
 class TestSPDX31IsRejectedByName(unittest.TestCase):

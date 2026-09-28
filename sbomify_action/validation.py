@@ -69,8 +69,10 @@ SPDX_SCHEMAS = {
 }
 
 #: A 3.0 patch release above the newest bundled one is held to the newest
-#: bundled 3.0 schema. Patch releases are formatting-only, and the backend
-#: accepts them the same way.
+#: bundled 3.0 schema, unchanged, as the backend does. That schema pins
+#: @context to the 3.0.1 URL, so such a document passes only while it keeps
+#: the 3.0.1 context; one declaring a later patch context is refused on both
+#: ends.
 _SPDX30_PATCH = re.compile(r"3\.0\.[1-9]\d*")
 _NEWEST_SPDX30 = "3.0.1"
 
@@ -82,10 +84,6 @@ def spdx_schema_version(spec_version: str) -> str | None:
     if _SPDX30_PATCH.fullmatch(spec_version):
         return _NEWEST_SPDX30
     return None
-
-
-def _spdx_context(version: str) -> str:
-    return f"https://spdx.org/rdf/{version}/spdx-context.jsonld"
 
 
 #: What a caller sending an SPDX 3 version we do not accept is told. Worded to
@@ -230,16 +228,7 @@ def get_schema_for_format(sbom_format: SBOMFormat, spec_version: str) -> dict[st
         schema_path = CDX_SCHEMAS.get(spec_version)
     elif sbom_format == "spdx":
         schema_version = spdx_schema_version(spec_version)
-        if schema_version is None:
-            return None
-        schema = _load_schema(SPDX_SCHEMAS[schema_version])
-        if schema is not None and schema_version != spec_version:
-            # The bundled schema pins @context to its own URL, which a later
-            # patch does not declare. Accept the document's own patch context
-            # as well as the bundled one, and nothing else.
-            context = {"enum": [_spdx_context(spec_version), _spdx_context(schema_version)]}
-            schema = {**schema, "properties": {**schema["properties"], "@context": context}}
-        return schema
+        schema_path = SPDX_SCHEMAS[schema_version] if schema_version else None
     else:
         return None
 
