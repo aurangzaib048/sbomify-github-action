@@ -18,6 +18,7 @@ Usage:
 """
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -67,6 +68,26 @@ SPDX_SCHEMAS = {
     "3.0": SPDX_SCHEMA_DIR / "spdx-3.0.0.schema.json",
 }
 
+#: A 3.0 patch release above the newest bundled one is held to the newest
+#: bundled 3.0 schema. Patch releases are formatting-only, and the backend
+#: accepts them the same way.
+_SPDX30_PATCH = re.compile(r"3\.0\.[1-9]\d*")
+_NEWEST_SPDX30 = "3.0.1"
+
+
+def spdx_schema_version(spec_version: str) -> str | None:
+    """The bundled SPDX schema a document declaring `spec_version` is held to."""
+    if spec_version in SPDX_SCHEMAS:
+        return spec_version
+    if _SPDX30_PATCH.fullmatch(spec_version):
+        return _NEWEST_SPDX30
+    return None
+
+
+def _spdx_context(version: str) -> str:
+    return f"https://spdx.org/rdf/{version}/spdx-context.jsonld"
+
+
 #: What a caller sending an SPDX 3 version we do not accept is told. Worded to
 #: match the backend's own rejection in sbomify/apps/sboms/schemas.py, so a
 #: user who hits both hears one answer rather than two.
@@ -79,11 +100,9 @@ SPDX3_UNSUPPORTED_MESSAGE = (
 def _supported_spdx_versions() -> str:
     """The versions this message may honestly claim, from what is bundled.
 
-    The backend's wording says "3.0.x", which is true there: its schema takes a
-    semver pattern, so a later 3.0 patch validates. Here a schema is chosen by
-    exact key, so 3.0.2 is refused, and repeating "3.0.x" meant refusing a
-    3.0.x while claiming to accept it. Derived rather than written out, so
-    bundling a version updates the sentence with it.
+    Derived rather than written out, so bundling a version updates the
+    sentence with it. A later 3.0 patch is also accepted, through
+    `spdx_schema_version`.
 
     The "3.0" alias key is left out: it exists so an unversioned-context
     document reaches a schema at all, and is not a version anyone can send.
@@ -210,7 +229,17 @@ def get_schema_for_format(sbom_format: SBOMFormat, spec_version: str) -> dict[st
     if sbom_format == "cyclonedx":
         schema_path = CDX_SCHEMAS.get(spec_version)
     elif sbom_format == "spdx":
-        schema_path = SPDX_SCHEMAS.get(spec_version)
+        schema_version = spdx_schema_version(spec_version)
+        if schema_version is None:
+            return None
+        schema = _load_schema(SPDX_SCHEMAS[schema_version])
+        if schema is not None and schema_version != spec_version:
+            # The bundled schema pins @context to its own URL, which a later
+            # patch does not declare. Accept the document's own patch context
+            # as well as the bundled one, and nothing else.
+            context = {"enum": [_spdx_context(spec_version), _spdx_context(schema_version)]}
+            schema = {**schema, "properties": {**schema["properties"], "@context": context}}
+        return schema
     else:
         return None
 
