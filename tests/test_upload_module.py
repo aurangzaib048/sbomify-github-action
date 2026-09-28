@@ -546,7 +546,10 @@ class TestSbomifyDestination(unittest.TestCase):
     def test_a_plain_text_400_names_its_reason(self, mock_client_cls):
         """The server's gzip middleware refuses with a bare text body, not JSON."""
         result = self._upload_answered_with(
-            mock_client_cls, 400, "text/html; charset=utf-8", "Decompressed request body exceeds the 104857600 byte limit"
+            mock_client_cls,
+            400,
+            "text/html; charset=utf-8",
+            "Decompressed request body exceeds the 104857600 byte limit",
         )
 
         self.assertFalse(result.success)
