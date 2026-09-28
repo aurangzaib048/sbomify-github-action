@@ -67,7 +67,9 @@ def inject_yocto_purls_spdx22(spdx_file: str) -> int:
         refs = pkg.setdefault("externalRefs", [])
         refs.append(
             {
-                "referenceCategory": "PACKAGE-MANAGER",
+                # The underscore is the only spelling the SPDX 2.2 schema
+                # accepts; 2.3 accepts it too. The hyphen is 2.3-only.
+                "referenceCategory": "PACKAGE_MANAGER",
                 "referenceType": "purl",
                 "referenceLocator": purl,
             }

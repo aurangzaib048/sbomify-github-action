@@ -1,7 +1,9 @@
 """Tests for Yocto PURL generation and injection."""
 
 import json
+import shutil
 from copy import deepcopy
+from pathlib import Path
 
 from packageurl import PackageURL
 
@@ -11,6 +13,7 @@ from sbomify_action._yocto.purl import (
     inject_yocto_purls_spdx3,
     inject_yocto_purls_spdx22,
 )
+from sbomify_action.validation import validate_sbom_file
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal SPDX 2.2 and SPDX 3 documents
@@ -148,9 +151,17 @@ class TestInjectYoctoPurlsSpdx22:
         pkg = result["packages"][0]
         assert len(pkg["externalRefs"]) == 1
         ref = pkg["externalRefs"][0]
-        assert ref["referenceCategory"] == "PACKAGE-MANAGER"
+        assert ref["referenceCategory"] == "PACKAGE_MANAGER"
         assert ref["referenceType"] == "purl"
         assert ref["referenceLocator"] == "pkg:yocto/busybox@1.36.1"
+
+    def test_a_valid_22_document_stays_valid(self, tmp_path):
+        path = tmp_path / "busybox.spdx.json"
+        shutil.copy(Path(__file__).parent / "test-data" / "yocto" / "busybox.spdx.json", path)
+
+        assert inject_yocto_purls_spdx22(str(path)) == 1
+        result = validate_sbom_file(str(path), "spdx", "2.2")
+        assert result.valid is True, result.error_message
 
     def test_skips_package_with_existing_yocto_purl(self, tmp_path):
         data = deepcopy(SPDX22_BASE)
