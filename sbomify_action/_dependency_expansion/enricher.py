@@ -279,8 +279,9 @@ class DependencyEnricher:
             existing_spdx_ids.add(spdx_id)
 
             # SPDX 2.2 requires the licence and copyright fields, which a
-            # discovered dependency has not been read for, and accepts only
-            # the PACKAGE_MANAGER spelling. Both forms are valid 2.3 as well.
+            # discovered dependency has not been read for, so they are
+            # NOASSERTION. 2.2 accepts only the PACKAGE_MANAGER spelling of
+            # the category, and 2.3 accepts it too.
             new_package = {
                 "SPDXID": spdx_id,
                 "name": dep.name,

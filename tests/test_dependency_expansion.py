@@ -764,7 +764,8 @@ class TestEnrichSPDX:
 
         sbom_file = tmp_path / "sbom.json"
         sbom_file.write_text((Path(__file__).parent / "test-data" / "yocto" / "busybox.spdx.json").read_text())
-        assert validate_sbom_file(str(sbom_file), "spdx", "2.2").valid is True
+        before = validate_sbom_file(str(sbom_file), "spdx", "2.2")
+        assert before.valid is True, before.error_message
 
         mock_expander = MagicMock()
         mock_expander.name = "pipdeptree"
