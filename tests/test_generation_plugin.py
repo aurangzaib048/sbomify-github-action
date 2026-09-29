@@ -770,7 +770,7 @@ class TestCreateDefaultRegistry(unittest.TestCase):
         for generator in create_default_registry().list_generators():
             for fmt in generator["formats"]:
                 with self.subTest(generator=generator["name"], format=fmt["format"]):
-                    self.assertIn(fmt["default"], settable[fmt["format"]])
+                    self.assertIn(fmt["default"], settable.get(fmt["format"], ()))
 
 
 class TestGeneratorOrchestrator(unittest.TestCase):
