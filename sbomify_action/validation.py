@@ -74,7 +74,7 @@ SPDX_SCHEMAS = {
 #: the 3.0.1 context; one declaring a later patch context is refused on both
 #: ends.
 _SPDX30_PATCH = re.compile(r"3\.0\.[1-9]\d*")
-_NEWEST_SPDX30 = "3.0.1"
+_NEWEST_SPDX30 = max((v for v in SPDX_SCHEMAS if v.startswith("3.0.")), key=lambda v: int(v.rsplit(".", 1)[1]))
 
 
 def spdx_schema_version(spec_version: str) -> str | None:
@@ -228,7 +228,7 @@ def get_schema_for_format(sbom_format: SBOMFormat, spec_version: str) -> dict[st
         schema_path = CDX_SCHEMAS.get(spec_version)
     elif sbom_format == "spdx":
         schema_version = spdx_schema_version(spec_version)
-        schema_path = SPDX_SCHEMAS[schema_version] if schema_version else None
+        schema_path = SPDX_SCHEMAS.get(schema_version) if schema_version else None
     else:
         return None
 
