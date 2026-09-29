@@ -134,7 +134,7 @@ def response_error_detail(response: requests.Response) -> str | None:
     if isinstance(body, dict):
         return clean_validation_error(body.get("detail"))
     text = response.text
-    if not isinstance(text, str) or "<" in text:
+    if not isinstance(text, str) or text.lstrip().startswith("<"):
         return None
     text = " ".join(text.split())
     return text[:300] or None

@@ -567,6 +567,12 @@ class TestSbomifyDestination(unittest.TestCase):
         self.assertEqual(result.error_message, "Failed to upload SBOM file. [502]")
 
     @patch("sbomify_action._upload.destinations.sbomify.SbomifyApiClient")
+    def test_a_plain_text_reason_may_contain_an_angle_bracket(self, mock_client_cls):
+        result = self._upload_answered_with(mock_client_cls, 413, "text/plain", "Body must be < 100 MB")
+
+        self.assertEqual(result.error_message, "Failed to upload SBOM file. [413] - Body must be < 100 MB")
+
+    @patch("sbomify_action._upload.destinations.sbomify.SbomifyApiClient")
     def test_a_json_detail_is_still_used(self, mock_client_cls):
         result = self._upload_answered_with(
             mock_client_cls, 400, "application/json", json.dumps({"detail": "Bad SBOM", "error_code": "BAD_REQUEST"})
