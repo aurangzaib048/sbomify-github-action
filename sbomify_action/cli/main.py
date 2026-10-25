@@ -1262,6 +1262,11 @@ def initialize_sentry() -> None:
         # Don't capture frame locals — they can hold OIDC JWTs / Bearer tokens
         # if an unexpected exception fires inside sbomify_action.oidc.
         include_local_variables=False,
+        # Inside a sampled transaction the SDK would otherwise add sentry-trace
+        # and baggage headers (trace ID, environment, release) to every outgoing
+        # HTTP request: package registries and a user's own Dependency-Track
+        # alike. The CLI starts no transactions today; this keeps it that way.
+        trace_propagation_targets=[],
     )
     logger.info(
         f"Telemetry is on: error reports go to Sentry at {urlsplit(sentry_dsn).hostname}. "

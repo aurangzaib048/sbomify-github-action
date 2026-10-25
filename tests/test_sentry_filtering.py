@@ -688,6 +688,9 @@ class TestTelemetryIsSafeAndDisclosed(unittest.TestCase):
         self.assertIs(options["send_default_pii"], False)
         self.assertEqual(options["traces_sample_rate"], 0.1)
         self.assertEqual(options["profiles_sample_rate"], 0.1)
+        # No sentry-trace / baggage headers on requests to registries or a
+        # user's Dependency-Track: they carry the release and the DSN key.
+        self.assertEqual(options["trace_propagation_targets"], [])
 
         client = sentry_sdk.get_client()
         try:

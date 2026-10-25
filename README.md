@@ -303,9 +303,8 @@ transactions, and 10% of those profiled), but the action records none.
 and no notice is printed.
 
 ```yaml
-- uses: sbomify/sbomify-action@master
-  env:
-    TELEMETRY: false
+env:
+  TELEMETRY: false
 ```
 
 | Variable | Default | Description |
