@@ -32,6 +32,13 @@ on:
         type: string
         required: true
 
+# One release at a time, never cancelled midway. Two runs for the same version
+# could both pass `check` before either pushes release/vX, and the second image
+# push would move :X off the digest the first run pinned.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
