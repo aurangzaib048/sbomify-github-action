@@ -1085,8 +1085,12 @@ jobs:
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
+  # Master pushes publish :latest and PRs build without pushing. Tag pushes
+  # do not build: release.yml published :X and pinned its digest into the
+  # tagged commit before the tag existed, and verify-release-pin checks it.
   images:
     name: Docker Images
+    if: github.ref_type != 'tag'
     needs:
       - sanity-checks
       - integration-tests
@@ -1108,3 +1112,20 @@ jobs:
       push: ${{ github.event_name == 'push' }}
     secrets:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  verify-release-pin:
+    name: Verify Release Pin
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    needs: docker-meta
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check action.yml and pipe.yml pin the released image
+        env:
+          VERSION: ${{ needs.docker-meta.outputs.version }}
+        run: scripts/verify_release_pin.sh "${VERSION}"

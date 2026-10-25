@@ -1,7 +1,8 @@
 ---
 # Builds the sbomify-action image for linux/amd64 and linux/arm64 and, when
 # push is true, publishes one multi-arch manifest as <image_tag> on GHCR and
-# the Docker Hub mirror. Called by the CI/CD Pipeline.
+# the Docker Hub mirror. Called by the CI/CD Pipeline (master and PRs) and by
+# the Release workflow, which pins the returned digest into action.yml.
 name: Build Docker Image
 
 on:
@@ -26,6 +27,10 @@ on:
     secrets:
       DOCKERHUB_TOKEN:
         required: false
+    outputs:
+      digest:
+        description: Manifest digest (sha256:...), the same on GHCR and Docker Hub; empty when push is false
+        value: ${{ jobs.push-images.outputs.digest }}
 
 env:
   IMAGE_NAME: sbomify-action
@@ -144,6 +149,8 @@ jobs:
     permissions:
       packages: write
       contents: read
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     env:
       GHCR_REPO: ${{ needs.meta.outputs.ghcr_repo }}
       DOCKERHUB_REPO: ${{ needs.meta.outputs.dockerhub_repo }}
@@ -192,6 +199,22 @@ jobs:
         run: |
           docker buildx imagetools inspect "${GHCR_REPO}:${IMAGE_TAG}"
           docker buildx imagetools inspect "${DOCKERHUB_REPO}:${IMAGE_TAG}"
+
+      # Both registries get the same manifest list built from the same
+      # per-platform digests, so they must report the same digest. The
+      # Release workflow pins it, and a pin that only matches one registry
+      # would leave Bitbucket pipe users on a different image.
+      - name: Read manifest digest
+        id: digest
+        run: |
+          GHCR_DIGEST=$(docker buildx imagetools inspect "${GHCR_REPO}:${IMAGE_TAG}" --format '{{.Manifest.Digest}}')
+          HUB_DIGEST=$(docker buildx imagetools inspect "${DOCKERHUB_REPO}:${IMAGE_TAG}" --format '{{.Manifest.Digest}}')
+          if [[ "${GHCR_DIGEST}" != sha256:* || "${GHCR_DIGEST}" != "${HUB_DIGEST}" ]]; then
+            echo "::error::Manifest digests differ or are missing: ${GHCR_REPO}:${IMAGE_TAG} is '${GHCR_DIGEST}'," \
+              "${DOCKERHUB_REPO}:${IMAGE_TAG} is '${HUB_DIGEST}'."
+            exit 1
+          fi
+          echo "digest=${GHCR_DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Image summary
         run: |
