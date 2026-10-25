@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, TypeVar, cast
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     import io
@@ -20,6 +21,7 @@ import sentry_sdk
 # Add cyclonedx imports for proper SBOM handling
 from .. import format_display_name
 from .._runtime import CIPlatform, get_platform, legacy_workspaces, workspace_candidates
+from .._runtime.redaction import scrub_secrets
 from .._upload import VALID_BOM_TYPES, VALID_DESTINATIONS
 from ..additional_packages import inject_additional_packages
 from ..augmentation import augment_sbom_from_file
@@ -1129,6 +1131,40 @@ def _is_auth_failure(message: str) -> bool:
     return any(status in message for status in _USER_SIDE_HTTP_STATUSES)
 
 
+def _scrub_event(event: dict[str, Any], paths: list[tuple[str, str]]) -> dict[str, Any]:
+    """Cut tokens and local paths out of the free text of a Sentry event.
+
+    Error messages, log lines and tool output quote whatever they were handed:
+    the checkout path, the home directory (and with it the user name), and now
+    and then a token an upstream echoed back. ``paths`` maps each local path to
+    the placeholder that replaces it, longest first.
+    """
+
+    def scrub(holder: dict[str, Any], key: str) -> None:
+        if isinstance(text := holder.get(key), str):
+            text = scrub_secrets(text)
+            for path, placeholder in paths:
+                text = text.replace(path, placeholder)
+            holder[key] = text
+
+    # sentry-sdk's argv integration attaches the command line, --token included.
+    (event.get("extra") or {}).pop("sys.argv", None)
+    scrub(event, "message")
+    logentry = event.get("logentry") or {}
+    scrub(logentry, "message")
+    scrub(logentry, "formatted")
+    for exception in (event.get("exception") or {}).get("values") or []:
+        scrub(exception, "value")
+        for frame in (exception.get("stacktrace") or {}).get("frames") or []:
+            scrub(frame, "abs_path")
+    for crumb in (event.get("breadcrumbs") or {}).get("values") or []:
+        scrub(crumb, "message")
+        data = crumb.get("data") or {}
+        for key in data:  # subprocess cwd, HTTP url and query string
+            scrub(data, key)
+    return event
+
+
 def initialize_sentry() -> None:
     """Initialize Sentry for error tracking.
 
@@ -1147,6 +1183,15 @@ def initialize_sentry() -> None:
         return
 
     sentry_dsn = os.getenv("SENTRY_DSN", "https://84e8d6d0a7d0872a4bba8add571a554c@sentry.vikpire.com/4")
+
+    # Never "/" or an unexpanded "~": replacing those would rewrite every path.
+    local_paths = [(str(path), "<workspace>") for path in workspace_candidates()]
+    local_paths.append((os.path.expanduser("~"), "<home>"))
+    local_paths = sorted(
+        ((path, placeholder) for path, placeholder in local_paths if len(Path(path).parts) > 1),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    )
 
     def before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
         """
@@ -1199,18 +1244,28 @@ def initialize_sentry() -> None:
         if _is_auth_failure(message):
             return None
 
-        return event
+        return _scrub_event(event, local_paths)
 
     sentry_sdk.init(
         dsn=sentry_dsn,
-        send_default_pii=True,
-        traces_sample_rate=1.0,
-        profiles_sample_rate=1.0,
+        send_default_pii=False,
+        # None would make sentry-sdk fill in socket.gethostname(), which on a
+        # developer laptop is the laptop's name. An empty string is kept as is.
+        server_name="",
+        # The profile rate applies only to transactions the trace rate already
+        # kept, so 0.1 of 0.1 profiles 1% of them. The CLI starts no
+        # transactions of its own today; these bound any that appear later.
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
         before_send=before_send,  # type: ignore[arg-type]
         release=f"sbomify-action@{SBOMIFY_VERSION}",
         # Don't capture frame locals — they can hold OIDC JWTs / Bearer tokens
         # if an unexpected exception fires inside sbomify_action.oidc.
         include_local_variables=False,
+    )
+    logger.info(
+        f"Telemetry is on: error reports go to Sentry at {urlsplit(sentry_dsn).hostname}. "
+        "Set TELEMETRY=false or pass --no-telemetry to turn it off."
     )
 
     # Set the action version as a tag (always safe to send)

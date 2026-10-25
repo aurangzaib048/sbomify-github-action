@@ -1,5 +1,6 @@
 """Test Sentry error filtering for user vs system errors."""
 
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from sbomify_action.exceptions import (
     SBOMGenerationError,
     SBOMValidationError,
 )
+from sbomify_action.logging_config import logger
 from tests.conftest import NoNetworkTransport
 
 # Use a bogus DSN to prevent any real Sentry events from being sent during tests
@@ -661,6 +663,100 @@ class TestSentryFiltering(unittest.TestCase):
             f"sbomify-action@{SBOMIFY_VERSION}",
             "Custom release should not be set when telemetry is disabled",
         )
+
+
+FAKE_HOME = "/home/telemetry-test-user"
+FAKE_WORKSPACE = "/srv/ci/checkout/acme-app"
+FAKE_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjaSJ9.c2lnbmF0dXJl"
+
+
+class TestTelemetryIsSafeAndDisclosed(unittest.TestCase):
+    """What leaves the machine when telemetry is on, and that the user is told.
+
+    Telemetry is on by default, so whoever installs the action has not chosen
+    to send anything. These pin down that what is sent carries no hostname,
+    command line, token or local path, and that the run says it is sending.
+    """
+
+    @patch.dict(os.environ, {"TELEMETRY": "true", "SENTRY_DSN": MOCK_SENTRY_DSN}, clear=True)
+    def test_init_sends_no_pii_hostname_or_command_line_and_samples_a_tenth(self):
+        clear_sentry_state()
+        with patch.object(sentry_sdk, "init", wraps=sentry_sdk.init) as init:
+            initialize_sentry()
+
+        options = init.call_args.kwargs
+        self.assertIs(options["send_default_pii"], False)
+        self.assertEqual(options["traces_sample_rate"], 0.1)
+        self.assertEqual(options["profiles_sample_rate"], 0.1)
+
+        client = sentry_sdk.get_client()
+        try:
+            raise SBOMGenerationError("Stays in the process")
+        except SBOMGenerationError:
+            sentry_sdk.capture_exception()
+        event = client.transport.envelopes[-1].get_event()
+
+        # sentry-sdk fills an unset server_name from socket.gethostname(),
+        # which on a developer laptop is the laptop's name.
+        self.assertFalse(event.get("server_name"))
+        # The argv integration would send the command line, --token included.
+        self.assertNotIn("sys.argv", event.get("extra", {}))
+
+    @patch.dict(
+        os.environ,
+        {
+            "TELEMETRY": "true",
+            "SENTRY_DSN": MOCK_SENTRY_DSN,
+            "HOME": FAKE_HOME,
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_WORKSPACE": FAKE_WORKSPACE,
+        },
+        clear=True,
+    )
+    def test_tokens_and_local_paths_are_scrubbed_from_every_event(self):
+        clear_sentry_state()
+        initialize_sentry()
+        client = sentry_sdk.get_client()
+
+        logger.info(f"Reading {FAKE_HOME}/.config/sbomify with Bearer {FAKE_JWT}")
+        logger.error(f"cdxgen failed in {FAKE_WORKSPACE}/src: Authorization: Bearer {FAKE_JWT}")
+        try:
+            raise SBOMGenerationError(f"Could not read {FAKE_HOME}/project/uv.lock (token {FAKE_JWT})")
+        except SBOMGenerationError:
+            sentry_sdk.capture_exception()
+
+        events = [envelope.get_event() for envelope in client.transport.envelopes]
+        log_event, exception_event = events[-2], events[-1]
+
+        self.assertEqual(
+            log_event["logentry"]["formatted"],
+            "cdxgen failed in <workspace>/src: Authorization: Bearer [REDACTED]",
+        )
+        self.assertEqual(
+            exception_event["exception"]["values"][0]["value"],
+            "Could not read <home>/project/uv.lock (token [REDACTED-JWT])",
+        )
+        breadcrumbs = [crumb.get("message") for crumb in exception_event["breadcrumbs"]["values"]]
+        self.assertIn("Reading <home>/.config/sbomify with Bearer [REDACTED]", breadcrumbs)
+
+        # And nowhere else in either event, whichever field it hid in.
+        sent = json.dumps(events)
+        for leaked in (FAKE_JWT, FAKE_HOME, FAKE_WORKSPACE):
+            self.assertNotIn(leaked, sent)
+
+    @patch.dict(os.environ, {"TELEMETRY": "true", "SENTRY_DSN": MOCK_SENTRY_DSN}, clear=True)
+    def test_notice_is_printed_once_when_on_and_never_when_off(self):
+        clear_sentry_state()
+        with self.assertLogs("sbomify_action", level="INFO") as logs:
+            initialize_sentry()
+        notices = [line for line in logs.output if "--no-telemetry" in line]
+        self.assertEqual(len(notices), 1, logs.output)
+        self.assertIn("Sentry", notices[0])
+        self.assertIn("example.com", notices[0])
+        self.assertIn("TELEMETRY=false", notices[0])
+
+        with patch.dict(os.environ, {"TELEMETRY": "false"}), self.assertNoLogs("sbomify_action", level="INFO"):
+            initialize_sentry()
 
 
 if __name__ == "__main__":
