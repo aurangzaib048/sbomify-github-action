@@ -128,6 +128,11 @@ def clear_cache() -> None:
     _url_safety_cache.clear()
 
 
+def _short_hash(value: str) -> str:
+    """Stable digest for cache keys, so tokens and URLs never appear in them."""
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
 def _get_client(purl_type: str) -> TeaClient | None:
     """Get or create a cached TeaClient for the given PURL type."""
     token = os.getenv("TEA_TOKEN")
@@ -191,6 +196,17 @@ class TeaSource:
     @property
     def provides_cle(self) -> bool:
         return True
+
+    @property
+    def cache_scope(self) -> str:
+        """Server and token that the registry's on-disk cache partitions TEA results by.
+
+        Read from the environment on every access because it changes between runs.
+        Hashed, so the token itself never reaches the cache.
+        """
+        base_url = os.getenv("TEA_BASE_URL")
+        server = _short_hash(base_url) if base_url else "auto"
+        return f"{server}.{_short_hash(os.getenv('TEA_TOKEN') or '')}"
 
     def supports(self, purl: PackageURL) -> bool:
         """Supported when PURL type has a known TEA domain or a safe TEA_BASE_URL is set."""

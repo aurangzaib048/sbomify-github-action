@@ -167,6 +167,11 @@ class SourceRegistry:
                 # let one throttled run suppress a package's enrichment until
                 # the entry expired.
                 cache_key = purl.to_string()
+                # A source whose answer depends on more than the coordinate (which
+                # server, which credentials) declares `cache_scope`, so one
+                # configuration's results are never served to another.
+                if scope := getattr(source, "cache_scope", None):
+                    cache_key = f"{scope}:{cache_key}"
                 hit, metadata = cache.get(source.name, cache_key)
                 if hit:
                     logger.debug(f"Cache hit ({source.name}) for {purl.name}")

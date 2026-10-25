@@ -1,11 +1,14 @@
 """Tests for the TEA enrichment source."""
 
+import sqlite3
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from libtea.exceptions import TeaConnectionError, TeaNotFoundError, TeaServerError
 from libtea.models import (
     CLE,
@@ -17,7 +20,9 @@ from libtea.models import (
 )
 from packageurl import PackageURL
 
+from sbomify_action._enrichment import cache
 from sbomify_action._enrichment.exceptions import TransientSourceError
+from sbomify_action._enrichment.registry import SourceRegistry
 from sbomify_action._enrichment.sources.tea import (
     PURL_TYPE_TO_TEA_DOMAIN,
     TeaSource,
@@ -517,3 +522,80 @@ class TestTeaInRegistry(unittest.TestCase):
         from sbomify_action._enrichment.enricher import clear_all_caches
 
         clear_all_caches()
+
+
+class TestTeaPersistentCacheScope:
+    """The registry's on-disk cache must not serve one TEA server's or token's answer to another.
+
+    That cache keys on the source name and the PURL. Unscoped, a result fetched from one
+    server, or with a privileged token, would be handed to a later run configured otherwise.
+    """
+
+    PURL = PackageURL.from_string("pkg:pypi/requests@2.31.0")
+
+    @pytest.fixture(autouse=True)
+    def _real_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SBOMIFY_CACHE_DIR", str(tmp_path))
+        monkeypatch.delenv("SBOMIFY_ENRICHMENT_CACHE", raising=False)
+        monkeypatch.delenv("TEA_BASE_URL", raising=False)
+        monkeypatch.delenv("TEA_TOKEN", raising=False)
+        self.cache_root = tmp_path
+        self.client = MagicMock()
+        release = MagicMock(uuid="pr-uuid", release_date=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        self.client.search_product_releases.return_value = MagicMock(results=(release,))
+        self.client.get_product_release_cle.side_effect = TeaNotFoundError("no CLE")
+        cache.close()
+        with (
+            patch("sbomify_action._enrichment.sources.tea.TeaClient") as client_cls,
+            patch("socket.getaddrinfo", side_effect=_fake_public_getaddrinfo),
+        ):
+            client_cls.return_value = client_cls.from_well_known.return_value = self.client
+            yield
+        cache.close()
+        clear_cache()
+
+    def _lookup(self):
+        clear_cache()  # a fresh run: only the on-disk cache survives
+        registry = SourceRegistry()
+        registry.register(TeaSource())
+        return registry.fetch_metadata(self.PURL, requests.Session())
+
+    @pytest.mark.parametrize(
+        ("var", "before", "after"),
+        [
+            ("TEA_TOKEN", "token-a", "token-b"),
+            ("TEA_TOKEN", None, "token-a"),
+            ("TEA_BASE_URL", "https://tea-a.example.com/v1", "https://tea-b.example.com/v1"),
+            ("TEA_BASE_URL", None, "https://tea-a.example.com/v1"),
+        ],
+    )
+    def test_changing_the_server_or_token_is_a_miss(self, monkeypatch, var, before, after):
+        if before:
+            monkeypatch.setenv(var, before)
+        assert self._lookup() is not None
+        monkeypatch.setenv(var, after)
+        self._lookup()
+        assert self.client.search_product_releases.call_count == 2, f"{var} changed, so the TEA server must be asked"
+
+    def test_the_same_server_and_token_still_hit(self, monkeypatch):
+        monkeypatch.setenv("TEA_BASE_URL", "https://tea-a.example.com/v1")
+        monkeypatch.setenv("TEA_TOKEN", "token-a")
+        first = self._lookup()
+        second = self._lookup()
+        assert self.client.search_product_releases.call_count == 1
+        assert first.cle_release_date == second.cle_release_date == "2024-01-01T00:00:00+00:00"
+
+    def test_the_token_never_reaches_the_cache(self, monkeypatch):
+        token = "tea-secret-token-value"
+        monkeypatch.setenv("TEA_TOKEN", token)
+        self._lookup()
+        cache.close()
+
+        with closing(sqlite3.connect(self.cache_root / "enrichment" / "metadata.sqlite")) as conn:
+            keys = [key for (key,) in conn.execute("SELECT key FROM entries")]
+        assert keys, "the lookup should have been cached"
+        assert not any(token in key for key in keys)
+        for path in self.cache_root.rglob("*"):
+            assert token not in path.name
+            if path.is_file():
+                assert token.encode() not in path.read_bytes()
