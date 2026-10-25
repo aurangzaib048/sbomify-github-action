@@ -188,7 +188,7 @@ A CBOM inventories the cryptographic assets in your project: algorithms, keys, c
 
 ### Generate with this action (cdxgen)
 
-The action can generate a CBOM from your project via [cdxgen](https://github.com/cdxgen/cdxgen) crypto detection (Java and Python projects, JS/TS source analysis, keystores, and certificates), and upload it with `bom-type: cbom`:
+The action can generate a CBOM from your project via [cdxgen](https://github.com/cdxgen/cdxgen) crypto detection (JavaScript/TypeScript source-level algorithms, plus Java keystores and certificates), and upload it with `bom-type: cbom`. cdxgen does not detect crypto in Python, or in Java source code: for those, use the [cbomkit-action recipe](#pass-through-a-cbom-from-cbomkit-action-java-python) below.
 
 ```yaml
 - uses: sbomify/sbomify-action@master
