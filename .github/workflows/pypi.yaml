@@ -153,9 +153,13 @@ jobs:
 
       - name: Generate SBOM (PEP 770)
         env:
-          # Release -> production sbomify; master push -> staging (TestPyPI)
-          TOKEN: ${{ github.event_name == 'release' && secrets.SBOMIFY_TOKEN || secrets.SBOMIFY_STAGE_TOKEN }}
-          API_BASE_URL: ${{ github.event_name == 'release' && 'https://app.sbomify.com' || 'https://stage.sbomify.com' }}
+          # Release -> production sbomify; master push -> staging (TestPyPI).
+          # Each token is read only on its own event and chosen in the script:
+          # `release && SBOMIFY_TOKEN || SBOMIFY_STAGE_TOKEN` would fall back to
+          # the staging token, sent to production, if the first were ever empty.
+          EVENT_NAME: ${{ github.event_name }}
+          PROD_TOKEN: ${{ github.event_name == 'release' && secrets.SBOMIFY_TOKEN || '' }}
+          STAGE_TOKEN: ${{ github.event_name != 'release' && secrets.SBOMIFY_STAGE_TOKEN || '' }}
           COMPONENT_ID: 'XNsX40tonzvv'
           COMPONENT_NAME: 'sbomify Action'
           LOCK_FILE: uv.lock
@@ -164,7 +168,13 @@ jobs:
           AUGMENT: "true"
           ENRICH: "true"
           UPLOAD: "false"
-        run: uv run --frozen --no-dev sbomify-action
+        run: |
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            export TOKEN="${PROD_TOKEN}" API_BASE_URL="https://app.sbomify.com"
+          else
+            export TOKEN="${STAGE_TOKEN}" API_BASE_URL="https://stage.sbomify.com"
+          fi
+          uv run --frozen --no-dev sbomify-action
 
       - name: Upload SBOM
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
