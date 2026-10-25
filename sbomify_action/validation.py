@@ -397,7 +397,7 @@ def validate_sbom_file_auto(file_path: str) -> ValidationResult:
     try:
         with open(path) as f:
             sbom_data = json.load(f)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return ValidationResult.failure(
             sbom_format=None,
             spec_version="unknown",

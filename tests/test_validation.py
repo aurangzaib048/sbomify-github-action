@@ -241,6 +241,22 @@ class TestValidateSBOMFileAuto(unittest.TestCase):
         finally:
             Path(temp_path).unlink()
 
+    def test_non_utf8_file_has_no_format(self):
+        """A file that is not UTF-8 fails as invalid JSON instead of raising."""
+        for content in (b"\xff\xfe\x00garbage", "Résumé".encode("latin-1")):
+            with self.subTest(content=content):
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
+                    f.write(content)
+                    temp_path = f.name
+
+                try:
+                    result = validate_sbom_file_auto(temp_path)
+                    self.assertFalse(result.valid)
+                    self.assertIsNone(result.sbom_format)
+                    self.assertIn("invalid json", result.error_message.lower())
+                finally:
+                    Path(temp_path).unlink()
+
     def test_unknown_format(self):
         """Test auto-validating file with unknown format."""
         data = {"unknown": "format"}
