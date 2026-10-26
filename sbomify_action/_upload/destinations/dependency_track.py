@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+from requests.models import REDIRECT_STATI
 
 from sbomify_action.exceptions import ConfigurationError
 from sbomify_action.http_client import validate_endpoint_url
@@ -273,6 +274,10 @@ class DependencyTrackDestination:
                 headers=headers,
                 json=payload,
                 timeout=UPLOAD_TIMEOUT,
+                # requests drops Authorization on a cross-host or https->http
+                # redirect but keeps X-Api-Key, so following one would hand the
+                # key to whatever host, over whatever scheme, Location names.
+                allow_redirects=False,
             )
         except requests.exceptions.ConnectionError:
             return UploadResult.failure_result(
@@ -294,7 +299,16 @@ class DependencyTrackDestination:
                 error_message=f"SBOM upload to Dependency Track failed: {e}",
             )
 
-        # Handle response
+        # Handle response. A redirect counts as ok to requests, so check first.
+        if response.status_code in REDIRECT_STATI:
+            return UploadResult.failure_result(
+                destination_name=self.name,
+                error_message=(
+                    f"Dependency Track answered {response.status_code} redirecting to "
+                    f"{response.headers.get('Location')}. Not following it, because the API key would go "
+                    "with it. Set DTRACK_API_URL to the URL the server expects."
+                ),
+            )
         if not response.ok:
             err_msg = f"Failed to upload SBOM to Dependency Track. [{response.status_code}]"
             try:

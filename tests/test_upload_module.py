@@ -938,6 +938,30 @@ class TestDependencyTrackDestination(unittest.TestCase):
             Path(sbom_file).unlink()
 
     @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
+    def test_upload_does_not_follow_redirects(self, mock_put):
+        """requests strips Authorization on a cross-host or https->http
+        redirect, but never X-Api-Key, so following one would hand the key to
+        whatever the Location header names."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"bomFormat": "CycloneDX", "specVersion": "1.6"}, f)
+            sbom_file = f.name
+        try:
+            mock_put.return_value = Mock(ok=True, status_code=307, headers={"Location": "http://elsewhere/v1/bom"})
+            config = DependencyTrackConfig(api_key="test-key", api_url="https://dtrack.example.com/api", project_id="u")
+
+            result = DependencyTrackDestination(config=config).upload(
+                UploadInput(sbom_file=sbom_file, sbom_format="cyclonedx")
+            )
+
+            self.assertIs(mock_put.call_args[1]["allow_redirects"], False)
+            self.assertFalse(result.success)
+            self.assertIn("redirect", result.error_message)
+            self.assertIn("http://elsewhere/v1/bom", result.error_message)
+            self.assertIn("DTRACK_API_URL", result.error_message)
+        finally:
+            Path(sbom_file).unlink()
+
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
     def test_upload_success_with_parent_id(self, mock_put):
         """Test successful upload with parent id"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
