@@ -9,6 +9,7 @@ from cyclonedx.model import HashType
 from cyclonedx.model.bom import Bom
 
 from ..console import get_audit_trail
+from ..exceptions import SBOMValidationError
 from ..logging_config import logger
 from ..serialization import load_cyclonedx_bom, load_sbom_json, serialize_cyclonedx_bom
 from ..spdx3 import is_spdx3
@@ -313,8 +314,13 @@ def enrich_sbom_with_hashes(
 
     # Detect format and enrich
     if sbom_data.get("bomFormat") == "CycloneDX":
-        # CycloneDX format
-        bom = load_cyclonedx_bom(sbom_data)
+        # CycloneDX format. The deserializer reports a malformed document as
+        # whatever it tripped on, AttributeError included, so name it a parse
+        # error here, as the other callers do.
+        try:
+            bom = load_cyclonedx_bom(sbom_data)
+        except Exception as e:
+            raise SBOMValidationError(f"Failed to parse CycloneDX SBOM: {e}") from e
         stats = enricher.enrich_cyclonedx(bom, lock_path, overwrite_existing)
 
         # Serialize back

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 import click
 import sentry_sdk
+from cyclonedx.exception import CycloneDxException
 
 # Add cyclonedx imports for proper SBOM handling
 from .. import format_display_name
@@ -2154,6 +2156,17 @@ def _run_document_pipeline(config: "Config") -> None:
     print_final_success()
 
 
+#: What the optional steps after generation -- transitive dependency
+#: discovery and hash enrichment -- are expected to run into: a registry or a
+#: tool that is not there (OSError covers requests' errors too), a lock file
+#: or SBOM that does not parse, or a document the CycloneDX library will not
+#: serialise. The SBOM is still correct without what those steps add, so these
+#: are warnings. Anything else is a bug, and catching it as well meant a bug
+#: shipped an SBOM without the step's additions, exit 0, and never reached
+#: telemetry, which records errors and not warnings.
+_OPTIONAL_STEP_FAILURES = (OSError, ValueError, subprocess.SubprocessError, SBOMValidationError, CycloneDxException)
+
+
 def run_pipeline(config: Config) -> None:
     """
     Run the SBOM pipeline with the given configuration.
@@ -2583,7 +2596,7 @@ def run_pipeline(config: Config) -> None:
 
                 _log_step_end(1.4)
 
-            except Exception as e:
+            except _OPTIONAL_STEP_FAILURES as e:
                 logger.warning(f"Transitive dependency discovery failed (non-fatal): {e}")
                 _log_step_end(1.4, success=False)
                 # Don't fail the entire process - this is an enhancement
@@ -2612,7 +2625,7 @@ def run_pipeline(config: Config) -> None:
 
             _log_step_end(1.5)
 
-        except Exception as e:
+        except _OPTIONAL_STEP_FAILURES as e:
             logger.warning(f"Hash enrichment failed (non-fatal): {e}")
             _log_step_end(1.5, success=False)
             # Don't fail the entire process for hash enrichment issues

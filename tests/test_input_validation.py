@@ -9,14 +9,24 @@ Found by an audit of the action:
   passed Step 1 and was written out unchanged with exit 0.
 - ``AUGMENT=true`` with an ``sbomify.json`` that does not parse logged a
   warning, dropped the metadata it holds, and exited 0.
+- Transitive dependency discovery and hash enrichment are optional, so a
+  network or parse failure in them is a warning. A programming error in them
+  was swallowed the same way, with exit 0.
 """
 
 import json
+from importlib import import_module
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from sbomify_action.console import reset_audit_trail
 from sbomify_action.exceptions import FileProcessingError, SBOMValidationError
+
+# "sbomify_action.cli.main" as a dotted string resolves to the main() function
+# the package re-exports, so patch the module object.
+cli_main = import_module("sbomify_action.cli.main")
 
 NOT_OBJECTS = ["[]", "42", "null", '"sbom"']
 
@@ -210,3 +220,93 @@ def test_augment_stops_on_an_sbomify_json_it_cannot_read(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         run_pipeline(config)
     assert exc.value.code == 1
+
+
+@pytest.fixture
+def lock_file_run(tmp_path, monkeypatch):
+    """A lock-file run whose generator is stubbed and whose optional steps succeed."""
+    from sbomify_action._generation.result import GenerationResult
+    from sbomify_action.cli.main import build_config
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "requirements.txt").write_text("flask==3.0.0\n")
+
+    def generate(lock_file, output_file, **_):
+        Path(output_file).write_text(
+            json.dumps(
+                {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "components": [{"type": "library", "name": "flask", "version": "3.0.0"}],
+                }
+            )
+        )
+        return GenerationResult.success_result(
+            output_file=output_file, sbom_format="cyclonedx", spec_version="1.6", generator_name="stub"
+        )
+
+    monkeypatch.setattr(cli_main, "process_lock_file", generate)
+    monkeypatch.setattr("sbomify_action._dependency_expansion.supports_dependency_expansion", lambda _: True)
+    monkeypatch.setattr(
+        "sbomify_action._dependency_expansion.expand_sbom_dependencies",
+        Mock(return_value=Mock(added_count=0, discovered_count=0, dependencies=[])),
+    )
+    monkeypatch.setattr(
+        "sbomify_action._hash_enrichment.enrich_sbom_with_hashes",
+        Mock(return_value={"hashes_added": 0, "components_matched": 0, "sbom_components": 1}),
+    )
+    return build_config(lock_file="requirements.txt", upload=False, output_file="out.json")
+
+
+OPTIONAL_STEPS = [
+    "sbomify_action._dependency_expansion.expand_sbom_dependencies",
+    "sbomify_action._hash_enrichment.enrich_sbom_with_hashes",
+]
+
+
+@pytest.mark.parametrize("step", OPTIONAL_STEPS, ids=["dependency-discovery", "hash-enrichment"])
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("registry unreachable"), ValueError("lock file does not parse"), SBOMValidationError("not an SBOM")],
+    ids=["network", "parse", "sbom"],
+)
+def test_an_expected_failure_in_an_optional_step_is_a_warning(lock_file_run, monkeypatch, tmp_path, step, failure):
+    from sbomify_action.cli.main import run_pipeline
+
+    monkeypatch.setattr(step, Mock(side_effect=failure))
+
+    run_pipeline(lock_file_run)
+
+    assert (tmp_path / "out.json").exists()
+
+
+@pytest.mark.parametrize("step", OPTIONAL_STEPS, ids=["dependency-discovery", "hash-enrichment"])
+def test_a_programming_error_in_an_optional_step_is_not_swallowed(lock_file_run, monkeypatch, step):
+    """These ran under a bare ``except Exception`` and exited 0, so a bug in
+    either step shipped an SBOM missing what the step adds and nobody heard."""
+    from sbomify_action.cli.main import run_pipeline
+
+    monkeypatch.setattr(step, Mock(side_effect=AttributeError("'NoneType' object has no attribute 'components'")))
+
+    with pytest.raises(AttributeError):
+        run_pipeline(lock_file_run)
+
+
+_SHAPE_BROKEN = {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": "oops"}
+
+
+def test_hash_enrichment_names_a_malformed_sbom_a_parse_error(tmp_path):
+    """The CycloneDX deserializer raises AttributeError on this. Named for what
+    it is, it stays a warning in Step 1.5 instead of passing for a bug."""
+    from sbomify_action._hash_enrichment import enrich_sbom_with_hashes
+
+    with pytest.raises(SBOMValidationError, match="Failed to parse"):
+        enrich_sbom_with_hashes(_write(tmp_path, _SHAPE_BROKEN), str(tmp_path / "uv.lock"))
+
+
+def test_dependency_expansion_names_a_malformed_sbom_a_parse_error(tmp_path):
+    from sbomify_action._dependency_expansion.enricher import DependencyEnricher
+
+    path = Path(_write(tmp_path, _SHAPE_BROKEN))
+    with pytest.raises(SBOMValidationError, match="Failed to parse"):
+        DependencyEnricher()._enrich_cyclonedx(path, json.loads(path.read_text()), [], "stub")
