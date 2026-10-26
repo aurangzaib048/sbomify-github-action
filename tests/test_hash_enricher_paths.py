@@ -17,13 +17,16 @@ from cyclonedx.model import HashAlgorithm as CdxHashAlgorithm
 from cyclonedx.model import HashType
 from cyclonedx.model.bom import Bom
 from cyclonedx.model.component import Component, ComponentType
+from spdx_tools.spdx.model import ExternalPackageRef, ExternalPackageRefCategory, Package
 
+from sbomify_action._enrichment.metadata import NormalizedMetadata
 from sbomify_action._hash_enrichment.enricher import (
     HashEnricher,
     create_default_registry,
     enrich_sbom_with_hashes,
 )
 from sbomify_action.console import reset_audit_trail
+from sbomify_action.enrichment import _apply_metadata_to_spdx_package
 
 
 def _sri(payload: bytes) -> str:
@@ -151,23 +154,29 @@ class TestEnrichSpdx:
         assert checksum["checksumValue"] == _hex(b"lodash")
         assert checksum["algorithm"] == "SHA512"
 
-    def test_the_audit_trail_names_the_package_by_purl(self, npm_lock: Path):
-        """Registry enrichment records the PURL, so this must too, or a package
-        that gains a hash and then metadata is counted as two enriched components."""
+    def test_a_package_given_a_hash_and_metadata_counts_once(self, npm_lock: Path):
+        """SPDX registry enrichment records a package under its SPDXID, so the
+        hash enricher must use the same key, or one package that gains a hash
+        and then metadata counts as two enriched components. Driven through the
+        real SPDX enrichment path, not a hand-picked key."""
+        purl = "pkg:npm/lodash@4.17.21"
         doc = self._document()
         doc["packages"][0]["externalRefs"] = [
-            {
-                "referenceCategory": "PACKAGE-MANAGER",
-                "referenceType": "purl",
-                "referenceLocator": "pkg:npm/lodash@4.17.21",
-            }
+            {"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": purl}
         ]
         trail = reset_audit_trail()
 
         HashEnricher().enrich_spdx(doc, npm_lock)
-        trail.record_component_enriched("pkg:npm/lodash@4.17.21", ["description"], "npm")
+        package = Package(
+            spdx_id=doc["packages"][0]["SPDXID"],
+            name="lodash",
+            download_location="NOASSERTION",
+            external_references=[ExternalPackageRef(ExternalPackageRefCategory.PACKAGE_MANAGER, "purl", purl)],
+        )
+        _apply_metadata_to_spdx_package(package, NormalizedMetadata(description="x", homepage="https://lodash.com"))
 
-        assert trail.enrichment_counts() == (1, 2)
+        components, _fields = trail.enrichment_counts()
+        assert components == 1
 
     def test_a_document_with_no_packages_is_not_an_error(self, npm_lock: Path):
         stats = HashEnricher().enrich_spdx({"spdxVersion": "SPDX-2.3"}, npm_lock)
