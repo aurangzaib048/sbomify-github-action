@@ -217,3 +217,53 @@ class TestToolNameAndVersion:
         out = _run(tmp_path, monkeypatch, {}, "additional_packages", sbom_format="spdx", spec_version="3.0.1")
         tools = [e["name"] for e in out["@graph"] if e.get("type") == "Tool"]
         assert tools == [f"sbomify-action-{__version__}"]
+
+
+class TestSupplierFromPublisher:
+    """sbomqs never reads CycloneDX ``publisher``; its NTIA 2021, Interlynk and
+    FSCT supplier checks read ``supplier``. Enrichment named some components'
+    publisher and left the supplier empty."""
+
+    @staticmethod
+    def _enrich(tmp_path: Path, components: list[dict]) -> list[dict]:
+        from unittest.mock import Mock
+
+        from sbomify_action.enrichment import clear_cache, enrich_sbom
+
+        document = _cdx()
+        document["components"] = components
+        (tmp_path / "in.json").write_text(json.dumps(document), encoding="utf-8")
+        clear_cache()
+        with patch("requests.Session.get", return_value=Mock(status_code=404)):
+            enrich_sbom(str(tmp_path / "in.json"), str(tmp_path / "out.json"), validate=False)
+        return json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["components"]
+
+    def test_the_distribution_behind_an_os_component_is_its_supplier(self, tmp_path):
+        os_component = {"type": "operating-system", "name": "alpine", "version": "3.20.10", "bom-ref": "os"}
+        library = {"type": "library", "name": "x", "version": "1", "purl": "pkg:generic/x@1", "bom-ref": "x"}
+        out = {c["bom-ref"]: c for c in self._enrich(tmp_path, [os_component, library])}
+        assert out["os"]["publisher"] == "Alpine Linux"
+        assert out["os"]["supplier"] == {"name": "Alpine Linux"}
+
+    def test_a_publisher_with_no_supplier_becomes_the_supplier(self, tmp_path):
+        component = {
+            "type": "library",
+            "name": "x",
+            "version": "1",
+            "purl": "pkg:generic/x@1",
+            "bom-ref": "x",
+            "publisher": "Jane Maintainer",
+        }
+        assert self._enrich(tmp_path, [component])[0]["supplier"] == {"name": "Jane Maintainer"}
+
+    def test_an_existing_supplier_is_never_overwritten(self, tmp_path):
+        component = {
+            "type": "library",
+            "name": "x",
+            "version": "1",
+            "purl": "pkg:generic/x@1",
+            "bom-ref": "x",
+            "publisher": "Jane Maintainer",
+            "supplier": {"name": "Acme Corp"},
+        }
+        assert self._enrich(tmp_path, [component])[0]["supplier"] == {"name": "Acme Corp"}
