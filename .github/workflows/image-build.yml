@@ -150,6 +150,8 @@ jobs:
     permissions:
       packages: write
       contents: read
+      id-token: write      # Sigstore signing certificate
+      attestations: write
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
     env:
@@ -216,6 +218,26 @@ jobs:
             exit 1
           fi
           echo "digest=${GHCR_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # SLSA provenance for the multi-arch digest that releases pin, signed
+      # through Sigstore and stored both with GitHub and next to the image in
+      # each registry. A storage record would also need artifact-metadata:
+      # write, so it is left off.
+      - name: Attest provenance (GHCR)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_REPO }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest provenance (Docker Hub)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: docker.io/${{ env.DOCKERHUB_REPO }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
       # Each platform's provenance and SBOM sit in the index as an extra
       # manifest whose platform is unknown/unknown; they are not platforms.

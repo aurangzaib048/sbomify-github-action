@@ -108,6 +108,8 @@ jobs:
     permissions:
       packages: write
       contents: read
+      id-token: write      # image-build.yml's push-images job asks for these two
+      attestations: write
     # A called workflow resolves at this commit either way; actionlint 1.7.12
     # still rejects the $/ form zizmor asks for.
     uses: ./.github/workflows/image-build.yml # zizmor: ignore[self-repository]
