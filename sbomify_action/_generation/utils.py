@@ -1056,6 +1056,56 @@ def _composer_env(home: Path) -> dict[str, str]:
     return env
 
 
+#: composer.json config keys that decide whom Composer trusts, which hosts it
+#: talks to and how, or what credentials it sends -- or that point it at
+#: package metadata the repository supplies, which it would read as though it
+#: came from Packagist. Any of them in the scanned project's config means no
+#: pre-resolution. A denylist rather than an allowlist, so the settings
+#: projects actually commit (sort-packages, platform, allow-plugins,
+#: optimize-autoloader) keep working. Checked against Composer 2.10.3's
+#: res/composer-schema.json.
+_COMPOSER_CONFIG_DENYLIST = frozenset(
+    {
+        # TLS and trust. A repository-supplied cafile or capath lets anyone on
+        # the network path serve packages under it.
+        "cafile",
+        "capath",
+        "disable-tls",
+        "secure-http",
+        "secure-svn-domains",
+        # Hosts, and how they are reached.
+        "github-domains",
+        "gitlab-domains",
+        "forgejo-domains",
+        "github-protocols",
+        "gitlab-protocol",
+        "use-github-api",
+        "custom-headers",
+        # Credentials.
+        "http-basic",
+        "bearer",
+        "github-oauth",
+        "gitlab-oauth",
+        "gitlab-token",
+        "bitbucket-oauth",
+        "forgejo-token",
+        "client-certificate",
+        "store-auths",
+        "github-expose-hostname",
+        # Caches. Composer revalidates cached metadata against the server
+        # rather than refetching it, so a cache directory inside the
+        # repository is metadata the repository wrote.
+        "cache-dir",
+        "cache-repo-dir",
+        "cache-files-dir",
+        "cache-vcs-dir",
+    }
+)
+
+#: Setting these to their defaults weakens nothing, so it is not refused.
+_COMPOSER_CONFIG_DEFAULTS = {"disable-tls": False, "secure-http": True}
+
+
 def _composer_manifest_refusal(manifest: Path) -> str | None:
     """Why this composer.json must not be resolved here, or None.
 
@@ -1063,11 +1113,12 @@ def _composer_manifest_refusal(manifest: Path) -> str | None:
     runner's network, and turning packagist.org off goes through it too. A
     project with private or path repositories has a lock file to commit.
 
-    disable-tls and secure-http: Composer 2.10 reads both from the project's
-    config and offers no environment or command-line override (Config::get
-    lists them as "booleans without env var support"), so a manifest that
-    weakens TLS cannot be corrected, only refused. Anything other than the
-    safe literal is refused, rather than reimplementing PHP's truthiness.
+    config: anything in ``_COMPOSER_CONFIG_DENYLIST``. Composer reads these
+    from the project and most have no environment or command-line override --
+    Config::get lists disable-tls and secure-http as "booleans without env var
+    support" -- so they cannot be corrected, only refused. Only the exact
+    default literal is let through, rather than reimplementing PHP's
+    truthiness.
     """
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -1080,10 +1131,16 @@ def _composer_manifest_refusal(manifest: Path) -> str | None:
     config = data.get("config") or {}
     if not isinstance(config, dict):
         return "its config is not a JSON object"
-    if config.get("disable-tls", False) is not False:
-        return "its config sets disable-tls, which Composer gives no way to override"
-    if config.get("secure-http", True) is not True:
-        return "its config turns off secure-http, which Composer gives no way to override"
+    denied = sorted(
+        key
+        for key in config.keys() & _COMPOSER_CONFIG_DENYLIST
+        if not (key in _COMPOSER_CONFIG_DEFAULTS and config[key] is _COMPOSER_CONFIG_DEFAULTS[key])
+    )
+    if denied:
+        return (
+            f"its config sets {', '.join(denied)}, which decide{'s' if len(denied) == 1 else ''} what Composer "
+            "trusts, which hosts it talks to, or what credentials it sends"
+        )
     return None
 
 

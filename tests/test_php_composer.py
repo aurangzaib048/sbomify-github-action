@@ -442,6 +442,47 @@ class TestTheManifestCannotSteerTheResolution:
         assert resolve_composer_lockfile(tmp_path) == tmp_path / "composer.lock"
 
     @pytest.mark.parametrize(
+        "key,value",
+        [
+            # Trust: a CA bundle the repository supplies lets anyone on the
+            # network path serve packages under it.
+            ("cafile", "certs/ca.pem"),
+            ("capath", "certs/"),
+            # Credentials, sent wherever the manifest says.
+            ("http-basic", {"repo.example": {"username": "u", "password": "p"}}),
+            ("client-certificate", {"repo.example": {"local_cert": "client.pem"}}),
+            ("custom-headers", {"repo.example": ["Authorization: Bearer x"]}),
+            # Which hosts get treated as GitHub, and so get GitHub tokens.
+            ("github-domains", ["github.internal.example"]),
+            # Package metadata the repository supplies, read as if it came
+            # from Packagist.
+            ("cache-repo-dir", ".composer-cache/repo"),
+        ],
+    )
+    def test_a_manifest_that_sets_trust_hosts_or_credentials_is_refused(self, tmp_path, composer_runs, key, value):
+        self._manifest(tmp_path, config={key: value})
+
+        with pytest.raises(SBOMGenerationError, match="Commit a composer.lock") as error:
+            resolve_composer_lockfile(tmp_path)
+
+        assert key in str(error.value), "the refusal must say which setting it objects to"
+        assert composer_runs == []
+
+    def test_harmless_config_still_resolves(self, tmp_path, composer_runs):
+        """A denylist, so the settings projects actually commit keep working."""
+        self._manifest(
+            tmp_path,
+            config={
+                "sort-packages": True,
+                "platform": {"php": "8.4.1"},
+                "allow-plugins": {"symfony/flex": True},
+                "optimize-autoloader": True,
+            },
+        )
+
+        assert resolve_composer_lockfile(tmp_path) == tmp_path / "composer.lock"
+
+    @pytest.mark.parametrize(
         "repositories",
         [
             [{"type": "vcs", "url": "https://git.internal.example/acme/widget.git"}],
