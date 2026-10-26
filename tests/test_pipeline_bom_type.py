@@ -7,6 +7,8 @@ OUTPUT_FILE are exactly the authored bytes.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from sbomify_action.cli.main import build_config, run_pipeline
@@ -271,7 +273,7 @@ def test_hbom_with_spdx_content_is_refused(tmp_path, monkeypatch):
     assert exc.value.code == 1
 
 
-def test_hbom_can_be_tagged_into_a_product_release(tmp_path, monkeypatch):
+def test_hbom_can_be_tagged_into_a_product_release(tmp_path, monkeypatch, caplog):
     """A release slot is keyed on (component, format, bom_type), so an HBOM
     occupies its own slot rather than the component's SBOM slot. This
     combination used to be refused at config time, which left a hardware BOM
@@ -281,6 +283,7 @@ def test_hbom_can_be_tagged_into_a_product_release(tmp_path, monkeypatch):
     it off, step 6 is skipped and nothing here would be tagged."""
     from unittest.mock import patch
 
+    from sbomify_action._processors import AggregateResult, ProcessorResult
     from sbomify_action.upload import UploadResult
 
     config, _ = _hbom_config(
@@ -297,7 +300,9 @@ def test_hbom_can_be_tagged_into_a_product_release(tmp_path, monkeypatch):
         patch("sbomify_action._processors.orchestrator.ProcessorRegistry.process_all") as process_all,
     ):
         upload.return_value = UploadResult(success=True, destination_name="sbomify", sbom_id="hbom-9")
-        process_all.return_value = []
+        process_all.return_value = AggregateResult(
+            results=[ProcessorResult.success_result("sbomify_releases", processed_items=1)]
+        )
         run_pipeline(config)
 
     assert upload.call_args.kwargs["bom_type"] == "hbom"
@@ -305,3 +310,6 @@ def test_hbom_can_be_tagged_into_a_product_release(tmp_path, monkeypatch):
     assert processor_input.sbom_id == "hbom-9"
     assert processor_input.product_releases == ["myproduct:v1.2.3"]
     assert (tmp_path / "out.hbom.json").read_bytes() == AUTHORED_HBOM
+    # Step 6 swallows its own exceptions and logs them, so a run that crashed
+    # there still returns normally. Only the log shows it.
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
