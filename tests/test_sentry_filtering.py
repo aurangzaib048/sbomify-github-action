@@ -747,6 +747,75 @@ class TestTelemetryIsSafeAndDisclosed(unittest.TestCase):
         for leaked in (FAKE_JWT, FAKE_HOME, FAKE_WORKSPACE):
             self.assertNotIn(leaked, sent)
 
+    @patch.dict(
+        os.environ,
+        {
+            "TELEMETRY": "true",
+            "SENTRY_DSN": MOCK_SENTRY_DSN,
+            "HOME": FAKE_HOME,
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_WORKSPACE": FAKE_WORKSPACE,
+        },
+        clear=True,
+    )
+    def test_paths_in_log_params_extra_and_nested_breadcrumb_data_are_scrubbed(self):
+        """Most libraries log ``"%s", path``, which keeps the raw path in params.
+
+        The logging integration also copies ``extra=`` into the event's extra
+        and into each breadcrumb's data, where it can sit nested in dicts and
+        lists.
+        """
+        clear_sentry_state()
+        initialize_sentry()
+        client = sentry_sdk.get_client()
+
+        logger.info("Resolved inputs", extra={"inputs": {"locks": [f"{FAKE_HOME}/project/uv.lock"]}})
+        logger.error("Failed reading %s", f"{FAKE_HOME}/project/uv.lock", extra={"cwd": f"{FAKE_WORKSPACE}/src"})
+
+        event = client.transport.envelopes[-1].get_event()
+        self.assertEqual(event["logentry"]["params"], ["<home>/project/uv.lock"])
+        self.assertEqual(event["extra"]["cwd"], "<workspace>/src")
+        crumb = next(crumb for crumb in event["breadcrumbs"]["values"] if crumb.get("message") == "Resolved inputs")
+        self.assertEqual(crumb["data"]["inputs"], {"locks": ["<home>/project/uv.lock"]})
+
+        sent = json.dumps(event)
+        for leaked in (FAKE_HOME, FAKE_WORKSPACE):
+            self.assertNotIn(leaked, sent)
+
+    @patch.dict(
+        os.environ,
+        {
+            "TELEMETRY": "true",
+            "SENTRY_DSN": MOCK_SENTRY_DSN,
+            "GITHUB_ACTIONS": "true",
+            # The image's WORKDIR: short enough to turn up inside URLs.
+            "GITHUB_WORKSPACE": "/workspace",
+        },
+        clear=True,
+    )
+    def test_a_workspace_name_inside_a_url_is_left_alone(self):
+        clear_sentry_state()
+        initialize_sentry()
+        client = sentry_sdk.get_client()
+
+        logger.info("GET https://h/api/v1/workspaces 200")
+        logger.info("GET https://h/workspace/settings 200")
+        logger.error("cdxgen failed in /workspace/src and /workspace")
+
+        event = client.transport.envelopes[-1].get_event()
+        self.assertEqual(event["logentry"]["formatted"], "cdxgen failed in <workspace>/src and <workspace>")
+        breadcrumbs = [crumb.get("message") for crumb in event["breadcrumbs"]["values"]]
+        self.assertIn("GET https://h/api/v1/workspaces 200", breadcrumbs)
+        self.assertIn("GET https://h/workspace/settings 200", breadcrumbs)
+
+    @patch.dict(os.environ, {"TELEMETRY": "true", "SENTRY_DSN": ""}, clear=True)
+    def test_no_notice_when_the_dsn_is_empty(self):
+        """An empty DSN sends nothing, so there is nothing to disclose."""
+        clear_sentry_state()
+        with patch.object(logger, "info") as info:
+            initialize_sentry()
+        self.assertFalse([call for call in info.call_args_list if "Telemetry is on" in str(call)])
+
     @patch.dict(os.environ, {"TELEMETRY": "true", "SENTRY_DSN": MOCK_SENTRY_DSN}, clear=True)
     def test_notice_is_printed_once_when_on_and_never_when_off(self):
         clear_sentry_state()

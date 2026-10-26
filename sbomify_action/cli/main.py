@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -1138,30 +1139,39 @@ def _scrub_event(event: dict[str, Any], paths: list[tuple[str, str]]) -> dict[st
     the checkout path, the home directory (and with it the user name), and now
     and then a token an upstream echoed back. ``paths`` maps each local path to
     the placeholder that replaces it, longest first.
+
+    Log parameters, ``extra=`` values and breadcrumb data can hold a path at
+    any depth, so those are walked whole rather than field by field.
     """
 
-    def scrub(holder: dict[str, Any], key: str) -> None:
-        if isinstance(text := holder.get(key), str):
-            text = scrub_secrets(text)
+    def scrub(value: Any) -> Any:
+        if isinstance(value, str):
+            value = scrub_secrets(value)
             for path, placeholder in paths:
-                text = text.replace(path, placeholder)
-            holder[key] = text
+                # A whole path only: /workspace must not match inside
+                # .../v1/workspaces, nor a URL's /workspace/ segment.
+                value = re.sub(rf"(?<![\w.-]){re.escape(path)}(?![\w.-])", placeholder, value)
+            return value
+        if isinstance(value, dict):
+            return {scrub(key): scrub(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [scrub(item) for item in value]
+        return value
+
+    def scrub_keys(holder: dict[str, Any], *keys: str) -> None:
+        for key in keys:
+            if key in holder:
+                holder[key] = scrub(holder[key])
 
     # sentry-sdk's argv integration attaches the command line, --token included.
     (event.get("extra") or {}).pop("sys.argv", None)
-    scrub(event, "message")
-    logentry = event.get("logentry") or {}
-    scrub(logentry, "message")
-    scrub(logentry, "formatted")
+    scrub_keys(event, "message", "logentry", "extra")
     for exception in (event.get("exception") or {}).get("values") or []:
-        scrub(exception, "value")
+        scrub_keys(exception, "value")
         for frame in (exception.get("stacktrace") or {}).get("frames") or []:
-            scrub(frame, "abs_path")
+            scrub_keys(frame, "abs_path")
     for crumb in (event.get("breadcrumbs") or {}).get("values") or []:
-        scrub(crumb, "message")
-        data = crumb.get("data") or {}
-        for key in data:  # subprocess cwd, HTTP url and query string
-            scrub(data, key)
+        scrub_keys(crumb, "message", "data")  # data: subprocess cwd, HTTP url and query string
     return event
 
 
@@ -1268,10 +1278,12 @@ def initialize_sentry() -> None:
         # alike. The CLI starts no transactions today; this keeps it that way.
         trace_propagation_targets=[],
     )
-    logger.info(
-        f"Telemetry is on: error reports go to Sentry at {urlsplit(sentry_dsn).hostname}. "
-        "Set TELEMETRY=false or pass --no-telemetry to turn it off."
-    )
+    # An empty DSN leaves the SDK off: nothing is sent, so nothing to disclose.
+    if host := urlsplit(sentry_dsn).hostname:
+        logger.info(
+            f"Telemetry is on: error reports go to Sentry at {host}. "
+            "Set TELEMETRY=false or pass --no-telemetry to turn it off."
+        )
 
     # Set the action version as a tag (always safe to send)
     sentry_sdk.set_tag("action.version", SBOMIFY_VERSION)

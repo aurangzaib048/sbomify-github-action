@@ -291,8 +291,9 @@ problems, and publishing a version that already exists.
   any server does.
 - Your home directory and checkout path, which are replaced with `<home>` and `<workspace>` in
   messages, stack traces and breadcrumbs.
-- Bearer tokens and JWTs, which are replaced with `[REDACTED]`. Other secret formats are not
-  recognised, so do not print secrets into the action's log.
+- Bearer tokens and JWTs: a Bearer token is replaced with `Bearer [REDACTED]` and any other JWT
+  with `[REDACTED-JWT]`. Other secret formats are not recognised, so do not print secrets into
+  the action's log.
 - The command line (and with it a `--token` passed on it), local variable values, and environment
   variables other than the public-repository details above.
 
