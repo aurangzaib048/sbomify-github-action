@@ -7,6 +7,8 @@ Found by an audit of the action:
   ``AttributeError``, which telemetry then reported as a defect in the action.
 - A CycloneDX ``SBOM_FILE`` that fails its schema (``"components": "oops"``)
   passed Step 1 and was written out unchanged with exit 0.
+- ``AUGMENT=true`` with an ``sbomify.json`` that does not parse logged a
+  warning, dropped the metadata it holds, and exited 0.
 """
 
 import json
@@ -193,3 +195,18 @@ def test_an_sbom_file_with_no_components_still_passes(tmp_path, monkeypatch):
     run_pipeline(config)
 
     assert json.loads((tmp_path / "out.json").read_text())["components"] == []
+
+
+def test_augment_stops_on_an_sbomify_json_it_cannot_read(tmp_path, monkeypatch):
+    """AUGMENT=true with a malformed sbomify.json used to log a warning, drop
+    the supplier and author metadata, and exit 0."""
+    from sbomify_action.cli.main import run_pipeline
+
+    config = _sbom_file_config(
+        tmp_path, monkeypatch, {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}, augment=True
+    )
+    (tmp_path / "sbomify.json").write_text('{"supplier": {"name": "Acme"},}')
+
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline(config)
+    assert exc.value.code == 1

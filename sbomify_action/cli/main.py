@@ -2657,7 +2657,7 @@ def run_pipeline(config: Config) -> None:
             logger.info(f"{format_display_name(sbom_format)} SBOM augmentation completed")
             _log_step_end(2)
 
-        except (FileProcessingError, APIError, SBOMValidationError) as e:
+        except (FileProcessingError, APIError, SBOMValidationError, ConfigurationError) as e:
             logger.error(f"Step 2 (augmentation) failed: {e}")
             _log_step_end(2, success=False)
             sys.exit(1)
