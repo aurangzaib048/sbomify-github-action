@@ -20,7 +20,7 @@ from packageurl import PackageURL
 from . import format_display_name
 from ._runtime import get_platform
 from .exceptions import ForbiddenError
-from .job_summary import _read, _spdx_value, _walk
+from .job_summary import _read, _spdx_value, _walk, sbom_outputs
 from .logging_config import logger
 from .sbomify_api import SbomifyApiClient
 
@@ -201,10 +201,16 @@ class Drift:
         return "\n".join(lines)
 
 
-def publish_collapse(drift: Drift) -> None:
-    """The job summary for a run the collapse gate stopped. Never raises."""
+def publish_collapse(drift: Drift, config: "Config", sbom_format: str) -> None:
+    """The job summary and step outputs for a run the collapse gate stopped. Never raises.
+
+    The outputs still name the SBOM, so an ``if: failure()`` step can keep it for inspection.
+    """
     try:
-        get_platform().log_formatter().job_summary(f"### sbomify\n\n{drift.markdown(failed=True)}\n")
+        formatter = get_platform().log_formatter()
+        for name, value in sbom_outputs(config.output_file, sbom_format, drift.after).items():
+            formatter.set_output(name, value)
+        formatter.job_summary(f"### sbomify\n\n{drift.markdown(failed=True)}\n")
     except Exception as e:
         logger.warning(f"Could not write the run summary: {e}")
 

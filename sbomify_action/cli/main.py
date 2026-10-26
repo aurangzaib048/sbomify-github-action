@@ -2711,7 +2711,7 @@ def run_pipeline(config: Config) -> None:
     if drift and drift.collapsed:
         if config.fail_on_sbom_collapse:
             logger.error(drift.collapse_message(failing=True))
-            publish_collapse(drift)
+            publish_collapse(drift, config, FORMAT)
             sys.exit(1)
         logger.warning(drift.collapse_message(failing=False))
 

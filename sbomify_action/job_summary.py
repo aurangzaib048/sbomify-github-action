@@ -94,6 +94,14 @@ def _cell(counts: dict[str, int], name: str) -> str:
     return f"{counts[name]} of {total} ({counts[name] / total:.0%})" if total else "-"
 
 
+def sbom_outputs(output_file: str, sbom_format: str, components: int | None) -> dict[str, str]:
+    """The step outputs naming the SBOM: set when the collapse gate fails the run too."""
+    outputs = {"sbom-file": output_file, "sbom-format": sbom_format}
+    if components is not None:
+        outputs["component-count"] = str(components)
+    return outputs
+
+
 def publish_run_summary(
     config: "Config",
     sbom_format: str,
@@ -113,9 +121,7 @@ def publish_run_summary(
         spec_version = detect_sbom_format_and_version(doc)[1]
         url = component_url(config.api_base_url, config.component_id) if sbom_id and config.component_id else None
 
-        outputs = {"sbom-file": config.output_file, "sbom-format": sbom_format}
-        if after:
-            outputs["component-count"] = str(after["components"])
+        outputs = sbom_outputs(config.output_file, sbom_format, after["components"] if after else None)
         if sbom_id:
             outputs["sbom-id"] = sbom_id
         if url:

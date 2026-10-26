@@ -26,6 +26,7 @@ from sbomify_action.console import reset_audit_trail
 from sbomify_action.drift import Drift, compare_with_previous
 from sbomify_action.exceptions import APIError, ForbiddenError
 from sbomify_action.logging_config import warning_annotations
+from tests.test_job_summary import _read_outputs
 
 HEADING = "Changes since the previous SBOM"
 
@@ -315,6 +316,16 @@ def test_a_collapse_fails_the_run_before_anything_is_uploaded(tmp_path, summary,
     section = _drift_section(summary)
     assert "**Components:** 10 → 4" in section
     assert "FAIL_ON_SBOM_COLLAPSE" in section
+
+
+def test_a_collapse_still_names_the_sbom_in_the_step_outputs(tmp_path, summary, monkeypatch):
+    """So an `if: failure()` step can keep the collapsed SBOM for inspection."""
+    outputs = tmp_path / "outputs.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    with pytest.raises(SystemExit):
+        _run(tmp_path, _deps(4), previous_sbom=_write(tmp_path / "previous.cdx.json", _deps(10)))
+
+    assert _read_outputs(outputs) == {"sbom-file": "sbom.cdx.json", "sbom-format": "cyclonedx", "component-count": "4"}
 
 
 def test_the_gate_can_be_turned_off_for_a_drop_that_is_real(tmp_path, summary, caplog):
