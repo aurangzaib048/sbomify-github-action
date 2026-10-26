@@ -484,6 +484,32 @@ def restore_spdx_document_describes(file_path: str) -> int:
     return added_count
 
 
+def get_spdx_json_root_package(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the package an SPDX 2 JSON document describes, or None.
+
+    The root is what a DESCRIBES relationship from the document, or
+    ``documentDescribes``, points at. Never ``packages[0]``: syft lists a lock
+    file's dependencies first, so the first package is one of them, and the
+    component overrides written there renamed it. With several described
+    packages the first wins, as in ``get_spdx3_root_package``; dependency
+    expansion appends one for every package it discovers, after the
+    generator's own. A described file or a dangling reference is no root.
+
+    Relationships are read before ``documentDescribes``, the order spdx-tools
+    merges them in, so this agrees with the parsed document.
+    """
+    document_id = data.get("SPDXID", "SPDXRef-DOCUMENT")
+    described = [
+        relationship.get("relatedSpdxElement")
+        for relationship in data.get("relationships") or []
+        if relationship.get("spdxElementId") == document_id and relationship.get("relationshipType") == "DESCRIBES"
+    ]
+    if isinstance(data.get("documentDescribes"), list):
+        described += data["documentDescribes"]
+    packages = {package.get("SPDXID"): package for package in data.get("packages") or []}
+    return next((packages[ref] for ref in described if isinstance(ref, str) and ref in packages), None)
+
+
 def sanitize_dependency_graph(bom: Bom) -> int:
     """
     Fix orphaned dependency references by adding stub components for missing refs.

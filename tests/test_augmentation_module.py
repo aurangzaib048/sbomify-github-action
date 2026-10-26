@@ -2430,6 +2430,7 @@ class TestComponentPurlOverride:
             "name": "test-document",
             "documentNamespace": "https://example.com/test",
             "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: test"]},
+            "documentDescribes": ["SPDXRef-Package"],
             "packages": [
                 {
                     "SPDXID": "SPDXRef-Package",
@@ -2460,6 +2461,7 @@ class TestComponentPurlOverride:
             "name": "test-document",
             "documentNamespace": "https://example.com/test",
             "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: test"]},
+            "documentDescribes": ["SPDXRef-Package"],
             "packages": [
                 {
                     "SPDXID": "SPDXRef-Package",
@@ -2556,6 +2558,7 @@ class TestComponentPurlOverride:
             "dataLicense": "CC0-1.0",
             "documentNamespace": "https://example.com/test",
             "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: test"]},
+            "documentDescribes": ["SPDXRef-Package"],
             "packages": [
                 {
                     "SPDXID": "SPDXRef-Package",
