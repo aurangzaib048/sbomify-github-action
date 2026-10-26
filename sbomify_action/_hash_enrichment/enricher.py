@@ -10,7 +10,7 @@ from cyclonedx.model.bom import Bom
 
 from ..console import get_audit_trail
 from ..logging_config import logger
-from ..serialization import load_cyclonedx_bom, serialize_cyclonedx_bom
+from ..serialization import load_cyclonedx_bom, load_sbom_json, serialize_cyclonedx_bom
 from ..spdx3 import is_spdx3
 from .models import HashAlgorithm, PackageHash, normalize_package_name
 from .parsers import (
@@ -307,8 +307,7 @@ def enrich_sbom_with_hashes(
     lock_path = Path(lock_file)
 
     # Load SBOM
-    with sbom_path.open("r", encoding="utf-8") as f:
-        sbom_data = json.load(f)
+    sbom_data = load_sbom_json(sbom_file)
 
     enricher = HashEnricher()
 

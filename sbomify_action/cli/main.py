@@ -71,6 +71,7 @@ from ..serialization import (
     _add_compositions_if_missing,
     _fix_purl_encoding_bugs_in_json,
     load_cyclonedx_bom,
+    load_sbom_json,
     sanitize_spdx_licenses,
     serialize_cyclonedx_bom,
 )
@@ -1665,8 +1666,7 @@ def validate_sbom(file_path: str) -> str:
         SBOMValidationError: If SBOM is invalid or unsupported format
     """
     try:
-        with Path(file_path).open("r", encoding="utf-8-sig") as f:
-            data = json.load(f)
+        data = load_sbom_json(file_path)
     except json.JSONDecodeError:
         raise SBOMValidationError("Invalid JSON format")
     except UnicodeDecodeError:
@@ -1731,8 +1731,7 @@ def _detect_sbom_format_silent(file_path: str) -> str:
         SBOMValidationError: If SBOM is invalid or unsupported format
     """
     try:
-        with Path(file_path).open("r", encoding="utf-8-sig") as f:
-            data = json.load(f)
+        data = load_sbom_json(file_path)
     except json.JSONDecodeError:
         raise SBOMValidationError("Invalid JSON format")
     except UnicodeDecodeError:
@@ -1768,8 +1767,7 @@ def load_sbom_from_file(file_path: str) -> tuple[str, dict[str, Any], object]:
         SBOMValidationError: If SBOM cannot be parsed
     """
     try:
-        with Path(file_path).open("r", encoding="utf-8") as f:
-            sbom_json = json.load(f)
+        sbom_json = load_sbom_json(file_path)
 
         # Detect format silently (format should already be known at this point)
         if sbom_json.get("bomFormat") == "CycloneDX":
@@ -1780,7 +1778,7 @@ def load_sbom_from_file(file_path: str) -> tuple[str, dict[str, Any], object]:
             # load_cyclonedx_bom a bare license.text drops
             # COMPONENT_VERSION/NAME/PURL on the floor with only a warning,
             # rather than failing loudly.
-            parsed_object = load_cyclonedx_bom(sbom_json)
+            parsed_object: object = load_cyclonedx_bom(sbom_json)
             logger.debug(f"Successfully loaded CycloneDX SBOM from {file_path}")
         elif sbom_json.get("spdxVersion") is not None or is_spdx3(sbom_json):
             sbom_format = "spdx"

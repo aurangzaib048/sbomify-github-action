@@ -10,7 +10,7 @@ from packageurl import PackageURL
 
 from ..console import get_audit_trail
 from ..logging_config import logger
-from ..serialization import load_cyclonedx_bom, serialize_cyclonedx_bom
+from ..serialization import load_cyclonedx_bom, load_sbom_json, serialize_cyclonedx_bom
 from ..spdx3 import is_spdx3
 from .expanders.pipdeptree import PipdeptreeExpander
 from .models import DiscoveredDependency, ExpansionResult, normalize_python_package_name
@@ -69,8 +69,7 @@ class DependencyEnricher:
         # Load SBOM early so we can report accurate original_count
         # even when no transitive dependencies are discovered or
         # expansion is skipped entirely.
-        with sbom_path.open("r", encoding="utf-8") as f:
-            sbom_data = json.load(f)
+        sbom_data = load_sbom_json(sbom_file)
 
         # Find applicable expander
         expander = self._registry.get_expander_for(lock_path)
