@@ -44,12 +44,14 @@ When using sbomify-action in your workflows:
 Each image published from master or a release carries a SLSA build provenance attestation and a keyless cosign signature, both made by this repository's `image-build.yml` workflow. Images published before these were added carry neither. To verify a version, or the digest that a release tag pins:
 
 ```bash
-gh attestation verify oci://ghcr.io/sbomify/sbomify-action:<version> --repo sbomify/sbomify-action
-gh attestation verify oci://docker.io/sbomifyhub/sbomify-action:<version> --repo sbomify/sbomify-action
+gh attestation verify oci://ghcr.io/sbomify/sbomify-action:<version> \
+  --repo sbomify/sbomify-action --signer-workflow sbomify/sbomify-action/.github/workflows/image-build.yml
+gh attestation verify oci://docker.io/sbomifyhub/sbomify-action:<version> \
+  --repo sbomify/sbomify-action --signer-workflow sbomify/sbomify-action/.github/workflows/image-build.yml
 
 cosign verify ghcr.io/sbomify/sbomify-action:<version> \
   --certificate-identity https://github.com/sbomify/sbomify-action/.github/workflows/image-build.yml@refs/heads/master \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-`cosign verify` works the same way for `docker.io/sbomifyhub/sbomify-action`. The image index also holds BuildKit's own provenance and an SBOM for each platform; to read them, run `docker buildx imagetools inspect <image> --format '{{json .Provenance}}'` (or `.SBOM`).
+`image-build.yml` is a reusable workflow, so `gh` needs `--signer-workflow` to accept its attestation, and the flag also stops a signature from any other workflow in this repository from passing. The signature is stored as an OCI 1.1 referrer in cosign v3's bundle format, so verify it with cosign v3 or later; v2 looks for the legacy `.sig` tag and finds nothing. `cosign verify` works the same way for `docker.io/sbomifyhub/sbomify-action`. The image index also holds BuildKit's own provenance and an SBOM for each platform; to read them, run `docker buildx imagetools inspect <image> --format '{{json .Provenance}}'` (or `.SBOM`).
