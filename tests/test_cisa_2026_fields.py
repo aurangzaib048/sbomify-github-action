@@ -267,3 +267,47 @@ class TestSupplierFromPublisher:
             "supplier": {"name": "Acme Corp"},
         }
         assert self._enrich(tmp_path, [component])[0]["supplier"] == {"name": "Acme Corp"}
+
+
+VULNERABILITIES = [
+    {"id": "CVE-2026-0001", "affects": [{"ref": "pkg:cargo/serde@1.0.0"}]},
+    {"id": "GHSA-xxxx-yyyy-zzzz", "affects": [{"ref": "pkg:cargo/serde@1.0.0"}]},
+]
+
+
+class TestNoVulnerabilityData:
+    """BSI TR-03183-2 v2.1: an SBOM "MUST NOT contain vulnerability information".
+
+    Vulnerability data travels separately, as a VEX or VDR uploaded with
+    BOM_TYPE=vex, which stays verbatim (tests/test_pipeline_bom_type.py).
+    """
+
+    @pytest.mark.parametrize("source", ["sbom_file", "lock_file"])
+    def test_vulnerabilities_are_removed_from_an_sbom(self, tmp_path, monkeypatch, caplog, source):
+        document = _cdx()
+        document["vulnerabilities"] = VULNERABILITIES
+        out = _run(tmp_path, monkeypatch, document, source)
+        assert "vulnerabilities" not in out
+        assert out["components"] == document["components"]
+        assert "Removed 2 vulnerabilities" in caplog.text
+        assert "CVE-2026-0001, GHSA-xxxx-yyyy-zzzz" in caplog.text
+
+    def test_a_vex_sent_as_an_sbom_is_not_emptied(self, tmp_path, monkeypatch, caplog):
+        """Vulnerabilities and no inventory is a VEX with the wrong BOM_TYPE.
+        Stripping it would upload an empty document, so it is left alone and
+        the log says which BOM_TYPE to use."""
+        document = _cdx()
+        document["components"] = []
+        document["vulnerabilities"] = VULNERABILITIES
+        out = _run(tmp_path, monkeypatch, document, "sbom_file")
+        assert out["vulnerabilities"] == VULNERABILITIES
+        assert "BOM_TYPE=vex" in caplog.text
+
+    def test_a_supplied_sbom_with_a_byte_order_mark_is_still_read(self, tmp_path, monkeypatch):
+        """Step 1 accepts a UTF-8 BOM, so the finalize step has to as well."""
+        monkeypatch.chdir(tmp_path)
+        document = _cdx()
+        document["vulnerabilities"] = VULNERABILITIES
+        (tmp_path / "input.json").write_text("﻿" + json.dumps(document), encoding="utf-8")
+        run_pipeline(build_config(sbom_file="input.json", upload=False, output_file="out.json"))
+        assert "vulnerabilities" not in json.loads((tmp_path / "out.json").read_text(encoding="utf-8-sig"))

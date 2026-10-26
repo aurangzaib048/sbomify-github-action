@@ -1876,14 +1876,16 @@ def _finalize_sbom_fields(sbom_file: str, config: "Config") -> None:
 
     Runs last, after augmentation and enrichment, so it only fills what is
     still missing: a value from sbomify.json or the sbomify API, or one the
-    generator wrote itself, stands. A supplied SBOM_FILE keeps its own.
+    generator wrote itself, stands. A supplied SBOM_FILE keeps its own, and
+    only loses vulnerability data, which no SBOM may carry.
     """
-    if config.sbom_file and not config.is_additional_packages_only:
-        return
-
     path = Path(sbom_file)
-    document = json.loads(path.read_text(encoding="utf-8"))
-    changed = _list_sbomify_action_as_tool(document)
+    # utf-8-sig, as in step 1: a supplied SBOM_FILE may start with a byte-order mark.
+    document = json.loads(path.read_text(encoding="utf-8-sig"))
+    changed = _strip_vulnerabilities(document)
+    supplied = bool(config.sbom_file) and not config.is_additional_packages_only
+    if not supplied:
+        changed |= _list_sbomify_action_as_tool(document)
 
     # Generation context (CISA 2026 "SBOM Generation Context") follows from what
     # the action was given. CycloneDX 1.6 defines pre-build as information
@@ -1892,7 +1894,7 @@ def _finalize_sbom_fields(sbom_file: str, config: "Config") -> None:
     # source tree -- and post-build as information "obtained after a build
     # process has completed": a built image. A document assembled from
     # ADDITIONAL_PACKAGES alone was not produced either way, so it gets none.
-    if not config.is_additional_packages_only:
+    if not supplied and not config.is_additional_packages_only:
         phase = "post-build" if config.docker_image else "pre-build"
         if _declare_generation_context(document, phase):
             changed = True
@@ -1901,6 +1903,40 @@ def _finalize_sbom_fields(sbom_file: str, config: "Config") -> None:
 
     if changed:
         path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _strip_vulnerabilities(document: dict[str, Any]) -> bool:
+    """Remove a CycloneDX SBOM's ``vulnerabilities``; True if any were removed.
+
+    BSI TR-03183-2 v2.1 (sections 3.1 and 8.1.14): an SBOM "MUST NOT contain
+    vulnerability information", which goes out separately as a VEX or VDR
+    (BOM_TYPE=vex, uploaded verbatim). None of the bundled generators fills
+    the array as the action runs them, so this is mostly a supplied SBOM_FILE
+    from a scanner such as grype, or trivy with ``--scanners vuln``. SPDX 2
+    has no vulnerability section.
+    """
+    vulnerabilities = document.get("vulnerabilities")
+    if not vulnerabilities or document.get("bomFormat") != "CycloneDX":
+        return False
+    if not document.get("components"):
+        # Removing them would leave nothing: this is a VEX with the wrong type.
+        logger.warning(
+            f"This document lists {len(vulnerabilities)} vulnerabilities and no components, so it "
+            "looks like a VEX rather than an SBOM. It was left as it is; set BOM_TYPE=vex to "
+            "upload it as one."
+        )
+        return False
+    ids = [str(v.get("id")) for v in vulnerabilities if isinstance(v, dict) and v.get("id")]
+    shown = ", ".join(ids[:10]) + (f" and {len(ids) - 10} more" if len(ids) > 10 else "")
+    del document["vulnerabilities"]
+    logger.warning(
+        f"Removed {len(vulnerabilities)} vulnerabilities from the SBOM ({shown}). BSI TR-03183-2 "
+        "does not allow vulnerability data in an SBOM; upload it separately with BOM_TYPE=vex."
+    )
+    get_audit_trail().record_augmentation(
+        "vulnerabilities", "removed", f"{len(vulnerabilities)} entries", source="sbomify-action"
+    )
+    return True
 
 
 def _list_sbomify_action_as_tool(document: dict[str, Any]) -> bool:
@@ -4034,7 +4070,11 @@ def _parse_upload_destinations_callback(
     type=click.Choice(list(VALID_BOM_TYPES), case_sensitive=False),
     default="sbom",
     show_default=True,
-    help="Artifact type recorded on upload. Non-SBOM types are uploaded verbatim.",
+    help=(
+        "Artifact type recorded on upload. Non-SBOM types are uploaded verbatim. An sbom has any "
+        "CycloneDX vulnerabilities removed, because BSI TR-03183-2 does not allow vulnerability "
+        "data in an SBOM: send VEX or VDR data as vex."
+    ),
 )
 @click.option(
     "--spec-version",
