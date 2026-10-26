@@ -71,6 +71,7 @@ from ..serialization import (
     _add_compositions_if_missing,
     _fix_purl_encoding_bugs_in_json,
     load_cyclonedx_bom,
+    sanitize_cyclonedx_json_file_purls,
     sanitize_spdx_licenses,
     serialize_cyclonedx_bom,
 )
@@ -2671,6 +2672,11 @@ def run_pipeline(config: Config) -> None:
         # Check if the parent directory exists; if not, create it recursively
         if parent_dir != Path(".") and not parent_dir.exists():
             parent_dir.mkdir(parents=True, exist_ok=True)
+
+        # Enrichment clears file:, link: and path PURLs as it writes its
+        # output. Without it they would reach the final SBOM, so do it here.
+        if is_sbom and not config.enrich:
+            sanitize_cyclonedx_json_file_purls(final_sbom_file)
 
         _write_final_output(final_sbom_file, config.output_file, config.bom_type)
 

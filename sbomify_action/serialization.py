@@ -337,6 +337,61 @@ def sanitize_purls(bom: Bom) -> tuple[int, int]:
     return purls_normalized, purls_cleared
 
 
+def sanitize_cyclonedx_json_file_purls(file_path: str) -> tuple[int, int]:
+    """
+    Apply sanitize_purls() to a CycloneDX JSON file, editing only the PURLs.
+
+    For a document nothing else rewrites: a round trip through the CycloneDX
+    library would drop the fields it does not model, such as formulation,
+    annotations and declarations. Covers the same components as
+    sanitize_purls(). Anything other than a CycloneDX object is left alone.
+
+    Args:
+        file_path: Path to the JSON file (modified in place only if a PURL changed)
+
+    Returns:
+        Tuple of (purls_normalized, purls_cleared)
+    """
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("bomFormat") != "CycloneDX":
+        return 0, 0
+
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    tools = metadata.get("tools")
+    candidates = [*(data.get("components") or []), metadata.get("component")]
+    if isinstance(tools, dict):
+        candidates += tools.get("components") or []
+
+    tracker = get_transformation_tracker()
+    purls_normalized = 0
+    purls_cleared = 0
+    for comp in candidates:
+        purl_str = comp.get("purl") if isinstance(comp, dict) else None
+        if not purl_str or not isinstance(purl_str, str):
+            continue
+        name = str(comp.get("name", ""))
+        normalized_str, was_normalized = normalize_purl(purl_str)
+        if was_normalized and normalized_str:
+            tracker.record_purl_normalization(name, purl_str, normalized_str)
+            comp["purl"] = purl_str = normalized_str
+            purls_normalized += 1
+        is_invalid, reason = _is_invalid_purl(purl_str)
+        if is_invalid:
+            tracker.record_purl_cleared(name, purl_str, reason)
+            del comp["purl"]
+            purls_cleared += 1
+
+    if purls_normalized or purls_cleared:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info(f"PURL sanitization: normalized {purls_normalized}, cleared {purls_cleared} invalid PURL(s)")
+
+    return purls_normalized, purls_cleared
+
+
 def sanitize_spdx_purls(document: "Document") -> int:
     """
     Normalize PURLs in SPDX external references.
