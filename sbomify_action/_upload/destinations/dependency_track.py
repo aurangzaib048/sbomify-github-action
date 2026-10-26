@@ -3,7 +3,8 @@
 Dependency Track only supports CycloneDX format. SPDX uploads will be rejected.
 
 Configuration via environment variables (DTRACK_* prefix):
-    DTRACK_API_KEY: API key for authentication (required)
+    DTRACK_API_KEY: API key for authentication (required unless
+                    DTRACK_WORKLOAD_IDENTITY_PROVIDER is set)
     DTRACK_API_URL: Full API base URL (required). We append /v1/bom to this.
                     Must be https://, since the API key travels with every
                     request; http:// is accepted only for localhost unless
@@ -25,6 +26,17 @@ Configuration via environment variables (DTRACK_* prefix):
                     network path can read it and use it to upload or alter
                     SBOMs in Dependency-Track. Only for an internal instance
                     on a network you trust.
+    DTRACK_WORKLOAD_IDENTITY_PROVIDER: Authenticate with the CI job's own OIDC
+                    token instead of DTRACK_API_KEY (Dependency-Track 5.2+, GitHub
+                    Actions with `permissions: id-token: write`). The name of the
+                    workload identity provider registered in Dependency-Track,
+                    e.g. github-actions. Each run gets a short-lived session for
+                    a service account, so there is no long-lived API key to store
+                    as a CI secret, leak, or rotate.
+    DTRACK_SERVICE_ACCOUNT: Service account to act as (required with the above)
+    DTRACK_OIDC_AUDIENCE: Audience to request the OIDC token for. Must match the
+                    provider's Audience in Dependency-Track (required with the
+                    above; Dependency-Track suggests the instance URL)
 
 Note: Project name and version come from the global COMPONENT_NAME and COMPONENT_VERSION
 environment variables, not from DTRACK_* prefixed variables.
@@ -38,7 +50,8 @@ from typing import Any, Dict, Optional
 import requests
 from requests.models import REDIRECT_STATI
 
-from sbomify_action.exceptions import ConfigurationError
+from sbomify_action._runtime.redaction import scrub_secrets
+from sbomify_action.exceptions import ConfigurationError, OIDCExchangeError
 from sbomify_action.http_client import validate_endpoint_url
 from sbomify_action.logging_config import logger
 
@@ -47,6 +60,11 @@ from ..result import UploadResult
 
 # Upload timeout in seconds
 UPLOAD_TIMEOUT = 120
+
+# RFC 8693 token exchange, as Dependency-Track 5.2+ serves it at /api/v2/oauth/token.
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
+JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
+EXCHANGE_TIMEOUT = 30
 
 
 @dataclass
@@ -80,21 +98,25 @@ class DependencyTrackConfig(DestinationConfig):
     parent_version: str | None = None
     is_latest: bool = False
     allow_insecure_http: bool = False
+    workload_identity_provider: str | None = None
+    service_account: str | None = None
+    oidc_audience: str | None = None
 
     @classmethod
     def from_env(cls) -> Optional["DependencyTrackConfig"]:
         """Load configuration from DTRACK_* environment variables."""
         api_key = cls._get_env("API_KEY")
         api_url = cls._get_env("API_URL")
+        provider = cls._get_env("WORKLOAD_IDENTITY_PROVIDER")
 
-        # Require at least API key and URL
-        if not api_key or not api_url:
+        # Require the URL and a way to authenticate
+        if not api_url or not (api_key or provider):
             return None
 
         _project_tags = cls._get_env_list("PROJECT_TAGS") if cls._get_env("PROJECT_TAGS") is not None else None
 
         return cls(
-            api_key=api_key,
+            api_key=api_key or "",
             api_url=api_url.rstrip(
                 "/"
             ),  # Only strip trailing "/" so custom paths like /api or /dtrack/api are preserved
@@ -106,6 +128,9 @@ class DependencyTrackConfig(DestinationConfig):
             parent_version=cls._get_env("PARENT_VERSION"),
             is_latest=cls._get_env_bool("IS_LATEST", default=False),
             allow_insecure_http=cls._get_env_bool("ALLOW_INSECURE_HTTP", default=False),
+            workload_identity_provider=provider or None,
+            service_account=cls._get_env("SERVICE_ACCOUNT") or None,
+            oidc_audience=cls._get_env("OIDC_AUDIENCE") or None,
         )
 
     def is_configured(self) -> bool:
@@ -115,16 +140,84 @@ class DependencyTrackConfig(DestinationConfig):
         Note: Project name/version come from UploadInput, so we only check
         API credentials here. The full validation happens at upload time.
         """
-        return bool(self.api_key and self.api_url)
+        return bool(self.api_url and (self.api_key or self.workload_identity_provider))
 
-    def validate_api_url(self) -> None:
-        """Refuse a DTRACK_API_URL that the API key must not be sent to."""
+    def validate(self) -> None:
+        """Refuse a DTRACK_API_URL the credentials must not be sent to, and
+        workload identity settings that cannot produce a session."""
         validate_endpoint_url(
             self.api_url,
             "DTRACK_API_URL",
             allow_http=self.allow_insecure_http,
             allow_http_setting="DTRACK_ALLOW_INSECURE_HTTP",
         )
+        if not self.workload_identity_provider:
+            return
+        if self.api_key:
+            raise ConfigurationError(
+                "Set DTRACK_API_KEY or DTRACK_WORKLOAD_IDENTITY_PROVIDER, not both. Once federation "
+                "works, remove the API key so a long-lived secret is not left behind."
+            )
+        missing = [
+            name
+            for name, value in (
+                ("DTRACK_SERVICE_ACCOUNT", self.service_account),
+                ("DTRACK_OIDC_AUDIENCE", self.oidc_audience),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigurationError(f"DTRACK_WORKLOAD_IDENTITY_PROVIDER also needs {' and '.join(missing)}.")
+
+        from sbomify_action.oidc import get_oidc_provider
+
+        if get_oidc_provider() is None:
+            raise ConfigurationError(
+                "DTRACK_WORKLOAD_IDENTITY_PROVIDER needs an OIDC token from the CI platform, and this run "
+                "has none. On GitHub Actions, grant the job `permissions: id-token: write`."
+            )
+
+
+def _exchange_for_session_token(config: DependencyTrackConfig) -> str:
+    """Trade this CI job's OIDC token for a Dependency-Track service-account session.
+
+    Raises:
+        OIDCExchangeError: if no OIDC token can be minted, or Dependency-Track
+            refuses it.
+    """
+    from sbomify_action.oidc import get_oidc_provider
+
+    provider = get_oidc_provider()
+    if provider is None:
+        raise OIDCExchangeError("No CI OIDC token is available for this run.")
+    subject_token = provider.request_token(config.oidc_audience or "")
+    try:
+        response = requests.post(
+            f"{config.api_url}/v2/oauth/token",
+            data={
+                "grant_type": TOKEN_EXCHANGE_GRANT,
+                "subject_token_type": JWT_TOKEN_TYPE,
+                "subject_token": subject_token,
+                "workload_identity_provider": config.workload_identity_provider,
+                "service_account": config.service_account,
+            },
+            timeout=EXCHANGE_TIMEOUT,
+            # A 307/308 would re-post the OIDC token to whatever Location names.
+            allow_redirects=False,
+        )
+    except requests.RequestException as e:
+        raise OIDCExchangeError(f"Failed to reach the Dependency-Track token endpoint: {e}") from e
+
+    if response.status_code != 200:
+        raise OIDCExchangeError(
+            f"Dependency-Track refused the OIDC token exchange (HTTP {response.status_code}): "
+            f"{scrub_secrets(response.text[:300])}. Check that DTRACK_WORKLOAD_IDENTITY_PROVIDER, "
+            "DTRACK_SERVICE_ACCOUNT and DTRACK_OIDC_AUDIENCE match a provider and a binding in Dependency-Track."
+        )
+    try:
+        return str(response.json()["access_token"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise OIDCExchangeError("Dependency-Track token response did not contain an access_token") from e
 
 
 class DependencyTrackDestination:
@@ -139,7 +232,7 @@ class DependencyTrackDestination:
     Project name/version come from the global COMPONENT_NAME/COMPONENT_VERSION.
 
     Environment Variables:
-        DTRACK_API_KEY: API key for authentication (required)
+        DTRACK_API_KEY: API key for authentication (required unless using workload identity)
         DTRACK_API_URL: Base URL of Dependency Track (required)
         DTRACK_PROJECT_ID: UUID of the project (optional, alternative to name/version)
         DTRACK_AUTO_CREATE: Auto-create project (default: false)
@@ -150,6 +243,8 @@ class DependencyTrackDestination:
         DTRACK_IS_LATEST: Mark the uploaded BOM as the latest version (default: false)
         DTRACK_ALLOW_INSECURE_HTTP: Accept http:// to a non-localhost DTRACK_API_URL,
             which sends the API key unencrypted (default: false)
+        DTRACK_WORKLOAD_IDENTITY_PROVIDER, DTRACK_SERVICE_ACCOUNT, DTRACK_OIDC_AUDIENCE:
+            Authenticate with the CI job's OIDC token instead of an API key (DT 5.2+)
     """
 
     def __init__(self, config: Optional[DependencyTrackConfig] = None):
@@ -188,7 +283,7 @@ class DependencyTrackDestination:
             )
 
         try:
-            self._config.validate_api_url()
+            self._config.validate()
         except ConfigurationError as e:
             return UploadResult.failure_result(destination_name=self.name, error_message=str(e))
 
@@ -217,11 +312,8 @@ class DependencyTrackDestination:
         # Build the upload URL - append /v1/bom to the API base URL
         url = f"{self._config.api_url}/v1/bom"
 
-        # Prepare headers
-        headers = {
-            "X-Api-Key": self._config.api_key,
-            "Content-Type": "application/json",
-        }
+        # Prepare headers (credentials are added just before sending)
+        headers = {"Content-Type": "application/json"}
 
         # Prepare payload
         # Dependency Track expects base64-encoded BOM
@@ -266,6 +358,15 @@ class DependencyTrackDestination:
                     "Dependency Track parent project configuration requires either DTRACK_PARENT_ID or both DTRACK_PARENT_NAME and DTRACK_PARENT_VERSION"
                 ),
             )
+
+        # Authenticate: a service-account session from the CI OIDC token, or the API key
+        if self._config.workload_identity_provider:
+            try:
+                headers["Authorization"] = f"Bearer {_exchange_for_session_token(self._config)}"
+            except OIDCExchangeError as e:
+                return UploadResult.failure_result(destination_name=self.name, error_message=str(e))
+        else:
+            headers["X-Api-Key"] = self._config.api_key
 
         # Execute the upload
         try:

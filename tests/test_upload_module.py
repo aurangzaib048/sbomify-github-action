@@ -28,6 +28,7 @@ from sbomify_action._upload import (
     UploadResult,
     create_registry_with_sbomify,
 )
+from sbomify_action.exceptions import ConfigurationError
 from sbomify_action.upload import upload_sbom, upload_to_all
 
 
@@ -1488,6 +1489,110 @@ def _stub_client(mock_client_cls: Mock, response: Mock | None = None) -> Mock:
     client.upload_sbom.return_value = response
     mock_client_cls.return_value = client
     return client
+
+
+WIF_ENV = {
+    "DTRACK_API_URL": "https://dtrack.example.com/api",
+    "DTRACK_WORKLOAD_IDENTITY_PROVIDER": "github-actions",
+    "DTRACK_SERVICE_ACCOUNT": "ci-pipeline",
+    "DTRACK_OIDC_AUDIENCE": "https://dtrack.example.com",
+    "DTRACK_PROJECT_ID": "project-uuid",
+}
+
+
+def _wif_config(**overrides: str) -> DependencyTrackConfig:
+    with patch.dict(os.environ, {**WIF_ENV, **overrides}, clear=True):
+        config = DependencyTrackConfig.from_env()
+    assert config is not None
+    return config
+
+
+@patch("sbomify_action.oidc.get_oidc_provider")
+class TestDependencyTrackWorkloadIdentity(unittest.TestCase):
+    """DT 5.2+ workload identity federation: a CI OIDC token is exchanged at
+    POST {api_url}/v2/oauth/token (RFC 8693) for a service-account session."""
+
+    def setUp(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"bomFormat": "CycloneDX", "specVersion": "1.6"}, f)
+            self.sbom_file = f.name
+        self.addCleanup(Path(self.sbom_file).unlink)
+
+    def _upload(self, config: DependencyTrackConfig) -> UploadResult:
+        return DependencyTrackDestination(config=config).upload(
+            UploadInput(sbom_file=self.sbom_file, sbom_format="cyclonedx")
+        )
+
+    def test_configured_without_api_key(self, _provider):
+        config = _wif_config()
+        self.assertEqual(config.workload_identity_provider, "github-actions")
+        self.assertEqual(config.service_account, "ci-pipeline")
+        self.assertEqual(config.oidc_audience, "https://dtrack.example.com")
+        self.assertTrue(DependencyTrackDestination(config=config).is_configured())
+
+    def test_validate_requires_service_account_and_audience(self, _provider):
+        config = _wif_config(DTRACK_SERVICE_ACCOUNT="", DTRACK_OIDC_AUDIENCE="")
+        with self.assertRaises(ConfigurationError) as cm:
+            config.validate()
+        self.assertIn("DTRACK_SERVICE_ACCOUNT", str(cm.exception))
+        self.assertIn("DTRACK_OIDC_AUDIENCE", str(cm.exception))
+
+    def test_validate_refuses_api_key_and_provider_together(self, _provider):
+        with self.assertRaises(ConfigurationError) as cm:
+            _wif_config(DTRACK_API_KEY="k").validate()
+        self.assertIn("DTRACK_API_KEY", str(cm.exception))
+
+    def test_validate_requires_ci_oidc_token(self, provider):
+        provider.return_value = None
+        with self.assertRaises(ConfigurationError) as cm:
+            _wif_config().validate()
+        self.assertIn("id-token: write", str(cm.exception))
+
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.post")
+    def test_upload_exchanges_token_and_sends_bearer(self, mock_post, mock_put, provider):
+        provider.return_value.request_token.return_value = "ci-jwt"
+        mock_post.return_value = Mock(status_code=200, json=Mock(return_value={"access_token": "dt-session"}))
+        mock_put.return_value = Mock(ok=True, status_code=200, json=Mock(return_value={"token": "t"}))
+
+        result = self._upload(_wif_config())
+
+        self.assertTrue(result.success, result.error_message)
+        provider.return_value.request_token.assert_called_once_with("https://dtrack.example.com")
+        (url,), kwargs = mock_post.call_args
+        self.assertEqual(url, "https://dtrack.example.com/api/v2/oauth/token")
+        self.assertEqual(
+            kwargs["data"],
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "subject_token": "ci-jwt",
+                "workload_identity_provider": "github-actions",
+                "service_account": "ci-pipeline",
+            },
+        )
+        self.assertIs(kwargs["allow_redirects"], False)
+        headers = mock_put.call_args[1]["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer dt-session")
+        self.assertNotIn("X-Api-Key", headers)
+
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.post")
+    def test_refused_exchange_fails_without_uploading(self, mock_post, mock_put, provider):
+        provider.return_value.request_token.return_value = "ci-jwt"
+        mock_post.return_value = Mock(
+            status_code=400,
+            text='{"error":"invalid_request","error_description":"no binding matched"}',
+            json=Mock(return_value={"error": "invalid_request", "error_description": "no binding matched"}),
+        )
+
+        result = self._upload(_wif_config())
+
+        self.assertFalse(result.success)
+        self.assertIn("400", result.error_message)
+        self.assertIn("no binding matched", result.error_message)
+        self.assertIn("DTRACK_SERVICE_ACCOUNT", result.error_message)
+        mock_put.assert_not_called()
 
 
 class TestSbomifyGzipCompression(unittest.TestCase):
