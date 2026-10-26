@@ -12,8 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
+from sbomify_action import __version__
 from sbomify_action.cli.main import build_config, run_pipeline
 from sbomify_action.generation import GenerationResult
+
+GENERATOR = {"type": "application", "group": "CycloneDX", "name": "cyclonedx-py", "version": "7.3.0"}
+SBOMIFY_ACTION = {"type": "application", "group": "sbomify", "name": "sbomify-action", "version": __version__}
 
 GITHUB_ENV = {
     "GITHUB_ACTIONS": "true",
@@ -66,6 +70,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: dict, source
     """Run the pipeline on ``document`` as if ``source`` had produced it; return the output."""
     monkeypatch.chdir(tmp_path)
     sbom_format = "cyclonedx" if "bomFormat" in document else "spdx"
+    sbom_format = str(overrides.pop("sbom_format", sbom_format))
 
     def generator(*_args: object, output_file: str, **_kwargs: object) -> GenerationResult:
         Path(output_file).write_text(json.dumps(document), encoding="utf-8")
@@ -82,6 +87,9 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: dict, source
         inputs["source_dir"] = "src"
     elif source == "docker_image":
         inputs["docker_image"] = "example/app:1.0"
+    elif source == "additional_packages":
+        monkeypatch.setenv("ADDITIONAL_PACKAGES", "pkg:pypi/requests@2.32.3")
+        inputs["lock_file"] = "none"
     else:
         (tmp_path / "input.json").write_text(json.dumps(document), encoding="utf-8")
         inputs["sbom_file"] = "input.json"
@@ -155,3 +163,57 @@ class TestGenerationContext:
         (tmp_path / "sbomify.json").write_text(json.dumps({"lifecycle_phase": "build"}), encoding="utf-8")
         out = _run(tmp_path, monkeypatch, _cdx(), "lock_file", augment=True)
         assert out["metadata"]["lifecycles"] == [{"phase": "build"}]
+
+
+class TestToolNameAndVersion:
+    """CISA 2026 "SBOM Tool Name" and "SBOM Tool Version".
+
+    Both the generator that ran and sbomify-action, which ran it and rewrote
+    its output, are named with versions. sbomify-action used to be listed only
+    when AUGMENT was on.
+    """
+
+    def test_cyclonedx_lists_the_generator_and_sbomify_action(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, _cdx(tools={"components": [GENERATOR]}), "lock_file")
+        assert out["metadata"]["tools"]["components"] == [GENERATOR, SBOMIFY_ACTION]
+
+    def test_cyclonedx_1_4_uses_the_legacy_tool_array(self, tmp_path, monkeypatch):
+        cargo = {"vendor": "CycloneDX", "name": "cargo-cyclonedx", "version": "0.5.7"}
+        out = _run(tmp_path, monkeypatch, _cdx("1.4", tools=[cargo]), "lock_file", spec_version="1.4")
+        assert out["metadata"]["tools"] == [
+            cargo,
+            {"vendor": "sbomify", "name": "sbomify-action", "version": __version__},
+        ]
+
+    def test_a_document_sbomify_action_wrote_itself_names_it(self, tmp_path, monkeypatch):
+        """gradle.lockfile is read by the action's own code, which listed no tool at all."""
+        out = _run(tmp_path, monkeypatch, _cdx(), "lock_file")
+        assert out["metadata"]["tools"] == {"components": [SBOMIFY_ACTION]}
+
+    def test_sbomify_action_is_not_listed_twice(self, tmp_path, monkeypatch):
+        """Augmentation lists it as a service named "sbomify action"."""
+        listed = {"services": [{"group": "sbomify", "name": "sbomify action", "version": __version__}]}
+        out = _run(tmp_path, monkeypatch, _cdx(tools=listed), "lock_file")
+        assert out["metadata"]["tools"] == listed
+
+    def test_spdx_2_creators_list_the_generator_and_sbomify_action(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, _spdx(), "lock_file")
+        assert out["creationInfo"]["creators"] == ["Tool: syft-1.42.4", f"Tool: sbomify-action-{__version__}"]
+
+    def test_a_supplied_sbom_keeps_its_own_tools(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, _cdx(tools={"components": [GENERATOR]}), "sbom_file")
+        assert out["metadata"]["tools"] == {"components": [GENERATOR]}
+
+    def test_additional_packages_only_cyclonedx_names_sbomify_action(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, {}, "additional_packages", sbom_format="cyclonedx")
+        assert SBOMIFY_ACTION in out["metadata"]["tools"]["components"]
+
+    def test_additional_packages_only_spdx_2_names_the_version(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, {}, "additional_packages", sbom_format="spdx")
+        tools = [c for c in out["creationInfo"]["creators"] if c.startswith("Tool:")]
+        assert tools == [f"Tool: sbomify-action-{__version__}"]
+
+    def test_additional_packages_only_spdx_3_names_the_version(self, tmp_path, monkeypatch):
+        out = _run(tmp_path, monkeypatch, {}, "additional_packages", sbom_format="spdx", spec_version="3.0.1")
+        tools = [e["name"] for e in out["@graph"] if e.get("type") == "Tool"]
+        assert tools == [f"sbomify-action-{__version__}"]

@@ -1876,26 +1876,73 @@ def _finalize_sbom_fields(sbom_file: str, config: "Config") -> None:
 
     Runs last, after augmentation and enrichment, so it only fills what is
     still missing: a value from sbomify.json or the sbomify API, or one the
-    generator wrote itself, stands.
+    generator wrote itself, stands. A supplied SBOM_FILE keeps its own.
     """
+    if config.sbom_file and not config.is_additional_packages_only:
+        return
+
+    path = Path(sbom_file)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    changed = _list_sbomify_action_as_tool(document)
+
     # Generation context (CISA 2026 "SBOM Generation Context") follows from what
     # the action was given. CycloneDX 1.6 defines pre-build as information
     # "obtained prior to a build process [that] may contain source files and
     # development artifacts and manifests" -- a lock file, or a scan of the
     # source tree -- and post-build as information "obtained after a build
-    # process has completed": a built image. A supplied SBOM_FILE gets none,
-    # because nothing says how it was produced, and neither does a document
-    # assembled from ADDITIONAL_PACKAGES alone.
-    if config.is_additional_packages_only or config.sbom_file:
-        return
-    phase = "post-build" if config.docker_image else "pre-build"
+    # process has completed": a built image. A document assembled from
+    # ADDITIONAL_PACKAGES alone was not produced either way, so it gets none.
+    if not config.is_additional_packages_only:
+        phase = "post-build" if config.docker_image else "pre-build"
+        if _declare_generation_context(document, phase):
+            changed = True
+            logger.info(f"Declared SBOM generation context: {phase}")
+            get_audit_trail().record_lifecycle_added(phase, source="sbomify-action")
 
-    path = Path(sbom_file)
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if _declare_generation_context(document, phase):
+    if changed:
         path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
-        logger.info(f"Declared SBOM generation context: {phase}")
-        get_audit_trail().record_lifecycle_added(phase, source="sbomify-action")
+
+
+def _list_sbomify_action_as_tool(document: dict[str, Any]) -> bool:
+    """Name sbomify-action and its version among the document's tools; True if added.
+
+    CISA 2026 asks for the tool name and version. Generators list themselves,
+    but sbomify-action -- which ran the generator and rewrote its output, and
+    wrote the whole document for a gradle.lockfile or ADDITIONAL_PACKAGES --
+    was only listed when AUGMENT was on. Augmentation calls it "sbomify
+    action", so either spelling counts as already listed.
+    """
+    names = ("sbomify action", SBOMIFY_TOOL_NAME)
+    if "spdxVersion" in document:
+        creators = document.setdefault("creationInfo", {}).setdefault("creators", [])
+        if any(creator.startswith(f"Tool: {name}") for creator in creators for name in names):
+            return False
+        creators.append(f"Tool: {SBOMIFY_TOOL_NAME}-{SBOMIFY_VERSION}")
+    elif document.get("bomFormat") == "CycloneDX":
+        metadata = document.setdefault("metadata", {})
+        if "tools" not in metadata:
+            metadata["tools"] = {} if _is_cdx_version_at_least(document.get("specVersion"), 1, 5) else []
+        tools = metadata["tools"]
+        # 1.5 replaced the tool array with components and services; the array is
+        # still valid there, so a document keeps whichever shape it has.
+        listed = tools if isinstance(tools, list) else [*tools.get("components", []), *tools.get("services", [])]
+        if any(tool.get("name") in names for tool in listed):
+            return False
+        if isinstance(tools, list):
+            tools.append({"vendor": SBOMIFY_VENDOR_NAME, "name": SBOMIFY_TOOL_NAME, "version": SBOMIFY_VERSION})
+        else:
+            tools.setdefault("components", []).append(
+                {
+                    "type": "application",
+                    "group": SBOMIFY_VENDOR_NAME,
+                    "name": SBOMIFY_TOOL_NAME,
+                    "version": SBOMIFY_VERSION,
+                }
+            )
+    else:
+        return False
+    get_audit_trail().record_tool_added(SBOMIFY_TOOL_NAME, SBOMIFY_VERSION)
+    return True
 
 
 def _declare_generation_context(document: dict[str, Any], phase: str) -> bool:
