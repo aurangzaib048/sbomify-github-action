@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       - name: Generate SBOM (PEP 770)
-        uses: sbomify/sbomify-action@master
+        uses: sbomify/sbomify-action@master  # zizmor: ignore[unpinned-uses] dogfoods this repo's own master
         env:
           TOKEN: ${{ secrets.SBOMIFY_STAGE_TOKEN }}
           API_BASE_URL: 'https://stage.sbomify.com'
@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
 
       - name: Generate SBOM (PEP 770)
-        uses: sbomify/sbomify-action@master
+        uses: sbomify/sbomify-action@master  # zizmor: ignore[unpinned-uses] dogfoods this repo's own master
         env:
           TOKEN: ${{ secrets.SBOMIFY_TOKEN }}
           COMPONENT_ID: 'XNsX40tonzvv'

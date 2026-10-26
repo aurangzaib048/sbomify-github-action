@@ -27,7 +27,7 @@
 # head_sha so the workspace matches the built commit/tag.
 name: sboms
 on:
-  workflow_run:
+  workflow_run:  # zizmor: ignore[dangerous-triggers] the job's if: admits only push runs of this repo
     workflows: ['CI/CD Pipeline']
     types: [completed]
 # Serialize runs per triggering ref so two master pushes (or re-runs of the
@@ -155,7 +155,7 @@ jobs:
               echo "product_release_id=Engh9j4XTTwD"
             } >> "$GITHUB_OUTPUT"
           fi
-      - uses: sbomify/sbomify-action@master
+      - uses: sbomify/sbomify-action@master  # zizmor: ignore[unpinned-uses] dogfoods this repo's own master
         env:
           API_BASE_URL: ${{ steps.cfg.outputs.api_base_url }}
           OIDC_AUDIENCE: ${{ steps.cfg.outputs.oidc_audience }}
