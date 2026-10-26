@@ -177,7 +177,7 @@ also available as `with:` inputs:
 | `working-dir` | `WORKING_DIR` | Directory to work in, relative to the repo root |
 | `component-purl` | `COMPONENT_PURL` | Override the component PURL in the SBOM |
 | `bom-type` | `BOM_TYPE` | `sbom` (default), `vex`, `cbom` or `hbom` |
-| `cbom-generate` | `CBOM_GENERATE` | Generate a CBOM of the certificate, key and keystore files under the `LOCK_FILE` directory (via cdxgen) and upload it as `bom_type=cbom` (implies `BOM_TYPE=cbom`; needs CycloneDX 1.6+; augmentation/enrichment stay off; Docker images unsupported) |
+| `cbom-generate` | `CBOM_GENERATE` | Generate a CBOM of the certificate, key and keystore files in the `LOCK_FILE` directory (via cdxgen) and upload it as `bom_type=cbom` (implies `BOM_TYPE=cbom`; needs CycloneDX 1.6+; augmentation/enrichment stay off; Docker images unsupported) |
 | `sbom-format` | `SBOM_FORMAT` | `cyclonedx` (default) or `spdx` |
 | `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3, or SPDX 3.0.1 with `LOCK_FILE: none`. Ignored when `SBOM_FILE` names a real file |
 | `oidc-audience` | `OIDC_AUDIENCE` | Audience for trusted publishing; override for self-hosted |
@@ -188,7 +188,7 @@ A CBOM inventories the cryptographic assets in your project: algorithms, keys, c
 
 ### Generate with this action (cdxgen)
 
-The action can generate a CBOM with [cdxgen](https://github.com/cdxgen/cdxgen) and upload it with `bom-type: cbom`. It inventories the certificate, key and keystore files under the `LOCK_FILE` directory and its subdirectories (`.pem`, `.cer`, `.key`, `.pub`, `.gpg`, `.p12`, `.jks`, `.jceks`, `.bks`, `.keystore`), each recorded as a certificate asset with its SHA-256, the same way in every ecosystem. It does not detect algorithms in source code, in any language: for that, use the [cbomkit-action recipe](#pass-through-a-cbom-from-cbomkit-action-java-python) below.
+The action can generate a CBOM with [cdxgen](https://github.com/cdxgen/cdxgen) and upload it with `bom-type: cbom`. It inventories the certificate, key and keystore files in the `LOCK_FILE` directory (`.pem`, `.cer`, `.key`, `.pub`, `.gpg`, `.p12`, `.jks`, `.jceks`, `.bks`, `.keystore`), each recorded as a certificate asset with its SHA-256. For Java, Scala and .NET projects, which are scanned recursively, that includes subdirectories. The scan stays scoped to the `LOCK_FILE` ecosystem, like SBOM generation, and runs cdxgen with `--no-install-deps`. It does not detect algorithms in source code, in any language: for that, use the [cbomkit-action recipe](#pass-through-a-cbom-from-cbomkit-action-java-python) below.
 
 ```yaml
 - uses: sbomify/sbomify-action@master

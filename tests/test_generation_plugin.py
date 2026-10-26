@@ -1872,11 +1872,13 @@ class TestIncludeCrypto(unittest.TestCase):
     @patch("sbomify_action._generation.generators.cdxgen._CDXGEN_AVAILABLE", True)
     @patch("sbomify_action._generation.generators.cdxgen.run_command")
     @patch("pathlib.Path.exists")
-    def test_cdxgen_fs_crypto_run_reaches_the_certificate_scan(self, mock_exists, mock_run):
+    def test_cdxgen_fs_crypto_run_reaches_the_certificate_scan_in_scope(self, mock_exists, mock_run):
         # cdxgen 12.8.x scans for certificates and keystores only on its
-        # multi-project path. A single -t, or --no-recurse without one, routes
-        # around it: on a package-lock.json fixture holding a .pem, .p12 and
-        # .jks, those argv found 0 cryptographic assets and this one found 3.
+        # multi-type path, which a single -t routes around (0 assets on a
+        # package-lock.json fixture holding a .pem, .p12 and .jks). Dropping
+        # -t and --no-recurse reaches it, but also evaluated a nested
+        # build.gradle. The type twice, the copy upper-cased, reaches it in
+        # scope: 3 assets, and neither a postinstall nor build.gradle ran.
         from sbomify_action._generation.generators.cdxgen import CdxgenFsGenerator
 
         mock_run.return_value = MagicMock(returncode=0)
@@ -1884,15 +1886,19 @@ class TestIncludeCrypto(unittest.TestCase):
 
         CdxgenFsGenerator().generate(GenerationInput(lock_file="/path/package-lock.json", include_crypto=True))
         cmd = mock_run.call_args[0][0]
+        start = cmd.index("-t")
+        self.assertEqual(cmd[start : start + 4], ["-t", "js", "-t", "JS"])
+        self.assertEqual(cmd.count("-t"), 2)
+        self.assertIn("--no-recurse", cmd)
+        self.assertIn("--no-install-deps", cmd)
         self.assertIn("--include-crypto", cmd)
-        self.assertNotIn("-t", cmd)
-        self.assertNotIn("--no-recurse", cmd)
 
-        # A plain SBOM run keeps its ecosystem restriction.
+        # A plain SBOM run is unchanged.
         CdxgenFsGenerator().generate(GenerationInput(lock_file="/path/package-lock.json"))
         cmd = mock_run.call_args[0][0]
-        self.assertIn("-t", cmd)
+        self.assertEqual(cmd.count("-t"), 1)
         self.assertIn("--no-recurse", cmd)
+        self.assertNotIn("--no-install-deps", cmd)
 
     @patch("sbomify_action._generation.generators.cdxgen._CDXGEN_AVAILABLE", True)
     @patch("sbomify_action._generation.generators.cdxgen.run_command")

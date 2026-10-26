@@ -190,14 +190,6 @@ class CdxgenFsGenerator:
         assert lock_file_name is not None  # guaranteed by supports()
         ecosystem = get_lock_file_ecosystem(lock_file_name)
         cdxgen_type = CDXGEN_TYPE_MAP.get(ecosystem) if ecosystem else None
-        # Not for a CBOM run, which also needs recursion (see --no-recurse
-        # below). cdxgen 12.8.x scans for certificates and keystores only on
-        # its multi-project path, and a single -t, or --no-recurse without
-        # one, routes around it: on a package-lock.json fixture holding a
-        # .pem, .p12 and .jks, both found 0 cryptographic assets, and no -t
-        # with recursion found all 3.
-        if input.include_crypto:
-            cdxgen_type = None
 
         # cdxgen is fetched rather than baked in: the bun runtime plus
         # node_modules was 619MB, which every user pulled whether or not they
@@ -266,11 +258,19 @@ class CdxgenFsGenerator:
         # Add type flag to restrict to detected ecosystem
         if cdxgen_type:
             cmd.extend(["-t", cdxgen_type])
+            # cdxgen 12.8.x scans for certificates and keystores only on its
+            # multi-type path, and one -t never reaches it. The same type twice
+            # is deduplicated back to one, so the copy is upper-cased: types
+            # match case-sensitively, so it selects no ecosystem of its own
+            # and the scan stays scoped to this one. Dropping -t instead found
+            # the assets too, but ran a nested build.gradle along the way.
+            if input.include_crypto:
+                cmd.extend(["-t", cdxgen_type.upper()])
 
         # For ecosystems with parent/child structures (Maven, Gradle), allow recursion
         # The -t flag will still restrict scanning to only that ecosystem
         # For other ecosystems, disable recursion to avoid scanning unrelated subdirectories
-        if ecosystem not in RECURSE_ECOSYSTEMS and not input.include_crypto:
+        if ecosystem not in RECURSE_ECOSYSTEMS:
             cmd.append("--no-recurse")
 
         # Exclude dev dependencies and local workspace packages across all ecosystems
@@ -290,6 +290,11 @@ class CdxgenFsGenerator:
         # a JVM, which the bundle omits, and its Babel path throws under bun.
         if input.include_crypto:
             cmd.append("--include-crypto")
+            # cdxgen's Ruby handling fires for any -t, and on the multi-type
+            # path so does CocoaPods for swift. Their commands, `bundle
+            # install` and `pod install`, sit behind this flag: with it, a
+            # top-level Gemfile was no longer evaluated.
+            cmd.append("--no-install-deps")
 
         # Fail on error to ensure we catch issues early
         cmd.append("--fail-on-error")
@@ -332,8 +337,8 @@ class CdxgenFsGenerator:
                     error_message=(
                         "cdxgen found no cryptographic assets, so there is no CBOM to upload. Here it "
                         "inventories certificate, key and keystore files (.pem, .cer, .key, .pub, .gpg, "
-                        ".p12, .jks, .jceks, .bks, .keystore) under the LOCK_FILE directory; it does not "
-                        "detect algorithms in source code."
+                        ".p12, .jks, .jceks, .bks, .keystore) in the LOCK_FILE directory, and in its "
+                        "subdirectories for Java, Scala and .NET; it does not detect algorithms in source code."
                     ),
                     sbom_format="cyclonedx",
                     spec_version=version,
