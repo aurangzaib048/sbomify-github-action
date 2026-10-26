@@ -800,13 +800,49 @@ class TestTelemetryIsSafeAndDisclosed(unittest.TestCase):
 
         logger.info("GET https://h/api/v1/workspaces 200")
         logger.info("GET https://h/workspace/settings 200")
-        logger.error("cdxgen failed in /workspace/src and /workspace")
+        logger.error("cdxgen failed in /workspace/src and /workspace. Retry in /workspace")
 
         event = client.transport.envelopes[-1].get_event()
-        self.assertEqual(event["logentry"]["formatted"], "cdxgen failed in <workspace>/src and <workspace>")
+        self.assertEqual(
+            event["logentry"]["formatted"],
+            "cdxgen failed in <workspace>/src and <workspace>. Retry in <workspace>",
+        )
         breadcrumbs = [crumb.get("message") for crumb in event["breadcrumbs"]["values"]]
         self.assertIn("GET https://h/api/v1/workspaces 200", breadcrumbs)
         self.assertIn("GET https://h/workspace/settings 200", breadcrumbs)
+
+    @patch.dict(
+        os.environ,
+        {"TELEMETRY": "true", "SENTRY_DSN": MOCK_SENTRY_DSN, "HOME": FAKE_HOME},
+        clear=True,
+    )
+    def test_a_home_path_is_scrubbed_after_a_flag_and_before_a_full_stop(self):
+        """A home directory is never a URL fragment, so no boundary may spare it."""
+        clear_sentry_state()
+        initialize_sentry()
+        client = sentry_sdk.get_client()
+
+        logger.error(f"cc -I{FAKE_HOME}/include failed reading {FAKE_HOME}.")
+
+        event = client.transport.envelopes[-1].get_event()
+        self.assertEqual(event["logentry"]["formatted"], "cc -I<home>/include failed reading <home>.")
+
+    @patch.dict(
+        os.environ,
+        {"TELEMETRY": "true", "SENTRY_DSN": MOCK_SENTRY_DSN, "HOME": FAKE_HOME},
+        clear=True,
+    )
+    def test_a_sibling_of_home_loses_the_user_name_and_keeps_only_its_suffix(self):
+        """/home/alice2 becomes <home>2: the suffix stays, the user name does not."""
+        clear_sentry_state()
+        initialize_sentry()
+        client = sentry_sdk.get_client()
+
+        logger.error(f"Copied {FAKE_HOME}-backup/x to {FAKE_HOME}2/x")
+
+        event = client.transport.envelopes[-1].get_event()
+        self.assertEqual(event["logentry"]["formatted"], "Copied <home>-backup/x to <home>2/x")
+        self.assertNotIn(os.path.basename(FAKE_HOME), json.dumps(event))
 
     @patch.dict(os.environ, {"TELEMETRY": "true", "SENTRY_DSN": ""}, clear=True)
     def test_no_notice_when_the_dsn_is_empty(self):

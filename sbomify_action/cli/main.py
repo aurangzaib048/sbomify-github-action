@@ -1143,14 +1143,22 @@ def _scrub_event(event: dict[str, Any], paths: list[tuple[str, str]]) -> dict[st
     Log parameters, ``extra=`` values and breadcrumb data can hold a path at
     any depth, so those are walked whole rather than field by field.
     """
+    # A path of two or more components (/home/alice) is never part of a URL,
+    # so it is replaced wherever it appears: after a flag (-I/home/alice/x),
+    # before a full stop, or at the start of a sibling (/home/alice2 becomes
+    # <home>2, keeping no part of the user name). A lone component such as
+    # /workspace, the image's WORKDIR, is generic, so it is matched only as a
+    # whole path: .../v1/workspaces and a URL's /workspace/ segment survive.
+    patterns = [
+        (re.escape(path) if len(Path(path).parts) > 2 else rf"(?<![\w.-]){re.escape(path)}(?![\w-]|\.\w)", placeholder)
+        for path, placeholder in paths
+    ]
 
     def scrub(value: Any) -> Any:
         if isinstance(value, str):
             value = scrub_secrets(value)
-            for path, placeholder in paths:
-                # A whole path only: /workspace must not match inside
-                # .../v1/workspaces, nor a URL's /workspace/ segment.
-                value = re.sub(rf"(?<![\w.-]){re.escape(path)}(?![\w.-])", placeholder, value)
+            for pattern, placeholder in patterns:
+                value = re.sub(pattern, placeholder, value)
             return value
         if isinstance(value, dict):
             return {scrub(key): scrub(item) for key, item in value.items()}
