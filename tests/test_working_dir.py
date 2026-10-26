@@ -239,6 +239,26 @@ class TestInputsResolveInsideWorkingDir:
         assert result.exit_code == 0, result.output
         assert seen["sbomify_json"] is None
 
+    def test_a_skipped_root_sbomify_json_is_named(self, monorepo, caplog):
+        """Dropping it quietly would thin the SBOM with nothing to say why."""
+        (monorepo / "packages" / "api" / "uv.lock").write_text("version = 1\n")
+
+        with caplog.at_level("WARNING"):
+            _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert str(monorepo / "sbomify.json") in caplog.text
+
+    def test_a_symlinked_root_sbomify_json_is_read(self, monorepo):
+        """The opt-in the warning above offers."""
+        package = monorepo / "packages" / "api"
+        (package / "uv.lock").write_text("version = 1\n")
+        (package / "sbomify.json").symlink_to("../../sbomify.json")
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert result.exit_code == 0, result.output
+        assert seen["sbomify_json"].resolve() == monorepo / "sbomify.json"
+
     def test_the_working_dirs_own_files_are_used(self, monorepo):
         package = monorepo / "packages" / "api"
         (package / "uv.lock").write_text("version = 1\n")

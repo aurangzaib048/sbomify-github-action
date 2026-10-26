@@ -158,7 +158,16 @@ class JsonConfigProvider:
             if workspace == cwd or not workspace.is_dir():
                 continue
             path = workspace / DEFAULT_CONFIG_FILE
-            if path.is_file() and inside_working_dir(path):
-                return path
+            if path.is_file():
+                if inside_working_dir(path):
+                    return path
+                logger.warning(
+                    f"Not reading '{path}': it is outside WORKING_DIR ('{cwd}'), which has no "
+                    f"{DEFAULT_CONFIG_FILE} of its own, and a config at the repository root may describe "
+                    "the repository rather than this package. If its supplier, authors and licenses "
+                    "apply here too, copy or symlink it into the working directory. Without them this "
+                    "SBOM may lack the supplier and author that the NTIA minimum elements and the EU CRA "
+                    "require."
+                )
 
         return None
