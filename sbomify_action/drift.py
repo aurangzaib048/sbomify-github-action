@@ -280,7 +280,8 @@ def load_previous_sbom(config: "Config", sbom_format: str) -> Previous | None:
     if path := config.previous_sbom:
         if not os.path.isfile(path):
             # The usual first release: the step meant to download it found nothing.
-            logger.info(f"No drift report: PREVIOUS_SBOM ({path}) does not exist")
+            # Relative to WORKING_DIR, which the CLI chdir'd into: say where that led.
+            logger.info(f"No drift report: PREVIOUS_SBOM ({os.path.abspath(path)}) does not exist")
             return None
         if not (doc := _read(path)):
             logger.warning(f"No drift report: PREVIOUS_SBOM ({path}) is not a JSON document")

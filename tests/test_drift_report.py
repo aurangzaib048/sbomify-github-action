@@ -132,6 +132,14 @@ def test_a_previous_sbom_that_is_not_there_yet_is_skipped_quietly(tmp_path, summ
     assert "PREVIOUS_SBOM" not in caplog.text
 
 
+def test_a_missing_previous_sbom_says_where_it_looked(tmp_path, summary, caplog):
+    """The path is relative to WORKING_DIR, not the checkout root: show where that led."""
+    with caplog.at_level(logging.INFO):
+        _run(tmp_path, previous_sbom="prev/sbom.json")
+
+    assert str(Path.cwd() / "prev" / "sbom.json") in caplog.text
+
+
 def test_a_previous_sbom_that_cannot_be_read_warns_and_is_skipped(tmp_path, summary, caplog):
     broken = tmp_path / "previous.json"
     broken.write_text("{not json", encoding="utf-8")

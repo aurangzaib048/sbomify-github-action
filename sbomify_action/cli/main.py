@@ -3993,8 +3993,8 @@ def _parse_upload_destinations_callback(
         "NTIA asks for a new SBOM with every release and the EU CRA for one covering at least "
         "your top-level dependencies: the comparison is how you see what a release changed, and "
         "notice a run whose SBOM lost components it should still list. When unset and the run "
-        "uploads to sbomify, the component's last SBOM there is used. A missing file skips the "
-        "comparison."
+        "uploads to sbomify, the component's last SBOM there is used. A relative path is relative "
+        "to the working directory (--working-dir). A missing file skips the comparison."
     ),
 )
 @click.option(
