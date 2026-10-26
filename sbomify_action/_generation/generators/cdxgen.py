@@ -30,13 +30,12 @@ from ..utils import (
     DEFAULT_TIMEOUT,
     DOTNET_LOCK_FILES,
     DOTNET_PROJECT_SUFFIXES,
-    composer_root_version,
     ensure_dotnet_installed,
     ensure_go_installed,
     ensure_java_maven_installed,
-    ensure_php_installed,
     get_lock_file_ecosystem,
     has_required_manifest,
+    resolve_composer_lockfile,
     resolve_npm_lockfile,
     run_command,
 )
@@ -202,33 +201,6 @@ class CdxgenFsGenerator:
         if lock_file_name in DOTNET_LOCK_FILES:
             ensure_dotnet_installed()
 
-        # PHP, and the same distinction: the manifest needs resolving, the
-        # lock file does not. cdxgen parses a committed composer.lock as data
-        # and never shells out, but for a composer.json with no lock beside it
-        # it stops with "No composer version found" -- and the chain then
-        # hands the input to syft, which writes zero components and exits 0.
-        #
-        # That is the common case rather than the corner: PHP libraries
-        # gitignore composer.lock, leaving the application to resolve it.
-        #
-        # Like the jvm bundle above, this one carries its own cdxgen, and
-        # prepending its bin_dirs shadows the copy from [bundle.cdxgen]. That
-        # is how the JVM path has always worked, and it is version-neutral:
-        # both come from the same tools_release pin, and all three bundles
-        # currently ship cdxgen 12.8.2 on Bun 1.3.14 -- checked, not assumed.
-        # Composer resolves the manifest against Packagist, and to do that it
-        # has to know what version *this* package is -- a project that depends
-        # on its own version otherwise fails to resolve entirely. It normally
-        # asks git, which refuses a workspace owned by another UID. See
-        # composer_root_version() for what that costs and where the value
-        # comes from instead.
-        env: dict[str, str] | None = None
-        if lock_file_name == "composer.json":
-            ensure_php_installed()
-            if root_version := composer_root_version():
-                logger.info(f"Telling Composer this package is version {root_version}")
-                env = {"COMPOSER_ROOT_VERSION": root_version}
-
         resolved_lockfile: Path | None = None
 
         cmd = [
@@ -282,6 +254,16 @@ class CdxgenFsGenerator:
             # created in someone else's checkout.
             if lock_file_name == "package.json":
                 resolved_lockfile = resolve_npm_lockfile(lock_file_directory)
+            # PHP the same way. cdxgen reads a committed composer.lock as data,
+            # but with --no-install-deps it does nothing for a bare
+            # composer.json -- and when it did, it ran `composer update`, which
+            # runs the project's scripts. So the lock is resolved here with
+            # scripts and plugins off; see resolve_composer_lockfile(). That
+            # fetches the php bundle, which carries its own cdxgen and shadows
+            # [bundle.cdxgen] on PATH, as the jvm bundle does: all three come
+            # from one tools_release pin and ship the same cdxgen.
+            elif lock_file_name == "composer.json":
+                resolved_lockfile = resolve_composer_lockfile(lock_file_directory)
 
             # run_command raises SBOMGenerationError on failure (uses check=True).
             # log_errors=False: cdxgen is a priority-20 fallback that routinely
@@ -289,7 +271,7 @@ class CdxgenFsGenerator:
             # cyclonedx-py/syft take over). Its failure is benign on the happy
             # path, so log it at DEBUG rather than spamming ERROR; the
             # orchestrator surfaces a real ERROR only if every generator fails.
-            run_command(cmd, "cdxgen", timeout=DEFAULT_TIMEOUT, cwd=str(lock_file_directory), log_errors=False, env=env)
+            run_command(cmd, "cdxgen", timeout=DEFAULT_TIMEOUT, cwd=str(lock_file_directory), log_errors=False)
 
             # Verify output file was created
             if not Path(output_file_abs).exists():

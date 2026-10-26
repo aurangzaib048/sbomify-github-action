@@ -899,6 +899,80 @@ def ensure_php_installed() -> None:
     ensure_runtime("composer")
 
 
+def resolve_composer_lockfile(directory: Path) -> Path | None:
+    """Resolve a bare composer.json into a composer.lock cdxgen can read.
+
+    cdxgen used to do this itself with ``composer update``, which runs the
+    root package's scripts -- code from the repository being scanned. It now
+    runs with --no-install-deps and does nothing for a bare composer.json:
+    measured on the symfony-demo fixture with its lock removed, it writes no
+    document at all, which aborts the run in the image.
+
+    So the resolution happens here instead, as ``resolve_npm_lockfile`` does
+    for package.json. --no-install resolves without fetching package
+    contents, and --no-scripts and --no-plugins keep the project's code from
+    running. Same fixture: 101 components, the count cdxgen's own install
+    reached, and a canary in its pre-update-cmd never fires.
+
+    The versions are a resolution performed now, not a record, which is why
+    the document says so -- see ``_disclose_inferred_resolution``. That only
+    works if the lock is gone again by then, so the caller removes it.
+
+    Returns the lock file created, or None when one is already committed.
+
+    Raises:
+        SBOMGenerationError: when Composer is unavailable or cannot resolve
+            the manifest. Before, cdxgen failed here too; the message now
+            says what to commit.
+    """
+    lock = directory / "composer.lock"
+    if lock.is_file():
+        return None
+
+    advice = "Commit a composer.lock beside composer.json (run `composer update`) and point LOCK_FILE at it."
+    try:
+        ensure_php_installed()
+    except SBOMGenerationError as e:
+        raise SBOMGenerationError(
+            f"composer.json has no composer.lock beside it, and Composer is not available to resolve one: {e} {advice}"
+        ) from e
+    if not shutil.which("composer"):
+        raise SBOMGenerationError(
+            f"composer.json has no composer.lock beside it, and Composer is not on PATH to resolve one. {advice}"
+        )
+
+    env = dict(os.environ)
+    if root_version := composer_root_version():
+        logger.info(f"Telling Composer this package is version {root_version}")
+        env["COMPOSER_ROOT_VERSION"] = root_version
+
+    logger.info("No composer.lock beside composer.json; resolving one without running the project's scripts")
+    cmd = [
+        "composer",
+        "update",
+        "--no-install",
+        "--no-scripts",
+        "--no-plugins",
+        "--ignore-platform-reqs",
+        "--no-interaction",
+    ]
+    try:
+        subprocess.run(
+            cmd, cwd=str(directory), capture_output=True, text=True, timeout=DEFAULT_TIMEOUT, check=True, env=env
+        )
+    except subprocess.CalledProcessError as e:
+        raise SBOMGenerationError(
+            f"Composer could not resolve composer.json:\n{combined_output(e.stderr, e.stdout)[-2000:]}\n{advice}"
+        ) from e
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise SBOMGenerationError(f"Composer could not resolve composer.json: {e}. {advice}") from e
+
+    if not lock.is_file():
+        raise SBOMGenerationError(f"Composer reported success but wrote no composer.lock. {advice}")
+    logger.info("Resolved composer.json into a temporary composer.lock for this run only")
+    return lock
+
+
 #: A version Composer will accept as the root package's: a numeric core, with
 #: whatever the project appends to it. Anything else -- "latest", a commit SHA,
 #: a branch name -- would be worse than saying nothing, because Composer feeds

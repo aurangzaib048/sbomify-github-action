@@ -553,7 +553,7 @@ class TestCdxgenFsGenerator(unittest.TestCase):
         self.assertIn("--fail-on-error", cmd)
 
     @patch("sbomify_action._generation.generators.cdxgen.resolve_npm_lockfile", return_value=None)
-    @patch("sbomify_action._generation.generators.cdxgen.ensure_php_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.resolve_composer_lockfile", return_value=None)
     @patch("sbomify_action._generation.generators.cdxgen.ensure_dotnet_installed")
     @patch("sbomify_action._generation.generators.cdxgen.ensure_go_installed")
     @patch("sbomify_action._generation.generators.cdxgen.ensure_java_maven_installed")
