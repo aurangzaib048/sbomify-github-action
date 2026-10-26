@@ -217,35 +217,30 @@ def _is_invalid_purl(purl_str: str | None) -> tuple[bool, str]:
     if not purl_str:
         return True, "empty or None PURL"
 
-    # Check for file: references anywhere in the PURL
-    if "file:" in purl_str:
-        return True, "contains file: reference (local workspace package)"
-
-    # Check for link: references (npm link)
-    if "link:" in purl_str:
-        return True, "contains link: reference (npm link)"
-
-    # Check for path-based versions (e.g., @../../ or @../ or @./)
-    if "@../../" in purl_str or "@../" in purl_str or "@./" in purl_str:
-        return True, "contains path-based version"
-
-    # Try to parse the PURL
     try:
         purl = PackageURL.from_string(purl_str)
-
-        # Check for invalid root namespace (common SBOM generator bug)
-        # Must check parsed namespace, not string matching, to avoid false positives
-        if purl.namespace in {"root", "@root"}:
-            return True, "contains invalid root namespace"
-
-        # Check for file: in qualifiers
-        if purl.qualifiers:
-            for key, value in purl.qualifiers.items():
-                if isinstance(value, str) and ("file:" in value or "link:" in value):
-                    return True, f"qualifier '{key}' contains file:/link: reference"
-
     except ValueError as e:
         return True, f"malformed PURL: {e}"
+
+    # Read the parsed (and percent-decoded) version, not the raw string: a name
+    # such as pkg:cpan/Makefile::Parser contains the text "file:" too.
+    version = purl.version or ""
+    if "file:" in version:
+        return True, "contains file: reference (local workspace package)"
+    if "link:" in version:
+        return True, "contains link: reference (npm link)"
+    if version.startswith(("./", "../")):
+        return True, "contains path-based version"
+
+    # A bare `root` namespace on npm is a generator bug: npm scopes always
+    # start with "@", so the registry cannot hold it. The real @root scope
+    # (@root/request) and `root` under any other type are left alone.
+    if purl.type == "npm" and purl.namespace == "root":
+        return True, "contains invalid root namespace"
+
+    for key, value in (purl.qualifiers or {}).items():
+        if isinstance(value, str) and ("file:" in value or "link:" in value):
+            return True, f"qualifier '{key}' contains file:/link: reference"
 
     return False, ""
 
