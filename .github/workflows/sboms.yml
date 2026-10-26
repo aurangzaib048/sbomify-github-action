@@ -184,6 +184,16 @@ jobs:
           OUTPUT_FILE: ${{ matrix.output_file }}
           SBOMIFY_CACHE_DIR: ${{ github.workspace }}/.sbomify-cache
           SYFT_CACHE_DIR: ${{ github.workspace }}/.sbomify-cache/syft
+      # A generator that cannot read its input still exits 0 with a valid SBOM
+      # listing nothing. SPDX counts the described root as a package; skip it.
+      - name: Fail if the SBOM lists no components
+        env:
+          SBOM: ${{ matrix.output_file }}
+        run: |
+          jq -e 'if .spdxVersion then
+              [.packages[]?.SPDXID] - [.documentDescribes[]?,
+                (.relationships[]? | select(.relationshipType == "DESCRIBES") | .relatedSpdxElement)]
+            else .components end | length > 0' "$SBOM"
       # ---------------------------------------------------------------------
       # Build-provenance attestation (SLSA v1)
       # ---------------------------------------------------------------------

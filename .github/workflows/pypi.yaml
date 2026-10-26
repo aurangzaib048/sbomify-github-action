@@ -42,6 +42,11 @@ jobs:
           ENRICH: "true"
           UPLOAD: "false"
 
+      # A generator that cannot read the lockfile still exits 0 with a valid
+      # SBOM listing nothing, and this wheel would ship it.
+      - name: Fail if the SBOM lists no components
+        run: jq -e '.components | length > 0' sbomify-action.cdx.json
+
       - name: Determine version
         id: version
         env:
@@ -105,6 +110,11 @@ jobs:
           AUGMENT: "true"
           ENRICH: "true"
           UPLOAD: "false"
+
+      # A generator that cannot read the lockfile still exits 0 with a valid
+      # SBOM listing nothing, and this wheel would ship it.
+      - name: Fail if the SBOM lists no components
+        run: jq -e '.components | length > 0' sbomify-action.cdx.json
 
       - name: Determine version
         id: version
