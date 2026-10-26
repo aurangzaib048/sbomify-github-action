@@ -926,10 +926,16 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
             says what to commit.
     """
     lock = directory / "composer.lock"
-    if lock.is_file():
+    advice = "Commit a composer.lock beside composer.json (run `composer update`) and point LOCK_FILE at it."
+
+    # lstat, not stat. A dangling symlink is not a file, so it read as "no
+    # lock"; Composer would then write through it, and the caller's cleanup
+    # would delete whatever it pointed at.
+    if lock.is_symlink():
+        raise SBOMGenerationError(f"composer.lock is a symlink, so it is neither read nor resolved over. {advice}")
+    if lock.exists():
         return None
 
-    advice = "Commit a composer.lock beside composer.json (run `composer update`) and point LOCK_FILE at it."
     try:
         ensure_php_installed()
     except SBOMGenerationError as e:
@@ -967,8 +973,14 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
     except (subprocess.TimeoutExpired, OSError) as e:
         raise SBOMGenerationError(f"Composer could not resolve composer.json: {e}. {advice}") from e
 
-    if not lock.is_file():
+    if not lock.is_symlink() and not lock.exists():
         raise SBOMGenerationError(f"Composer reported success but wrote no composer.lock. {advice}")
+    # Checked again before the caller registers it for deletion: whatever is
+    # there now has to be a file we made, in the project, and nothing else.
+    if lock.is_symlink() or not lock.is_file() or not lock.resolve().is_relative_to(directory.resolve()):
+        raise SBOMGenerationError(
+            f"Composer left a composer.lock that is not a regular file inside {directory}; not using it. {advice}"
+        )
     logger.info("Resolved composer.json into a temporary composer.lock for this run only")
     return lock
 

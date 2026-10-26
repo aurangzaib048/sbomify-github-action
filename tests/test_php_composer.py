@@ -295,6 +295,48 @@ class TestComposerJsonIsResolvedWithoutRunningTheProject:
         assert not result.success
         assert "Commit a composer.lock" in str(result.error_message)
 
+    def test_a_symlinked_lock_is_refused(self, tmp_path, monkeypatch):
+        """A dangling link is not a file, so it looked like no lock at all.
+        Composer would then write through it, and the cleanup would delete
+        whatever it pointed at."""
+        (tmp_path / "composer.json").write_text('{"require": {}}')
+        (tmp_path / "composer.lock").symlink_to(tmp_path.parent / "outside-the-project")
+        monkeypatch.setattr(utils.subprocess, "run", lambda *a, **k: pytest.fail("resolved through a symlink"))
+
+        with pytest.raises(SBOMGenerationError, match="symlink"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert not (tmp_path.parent / "outside-the-project").exists()
+
+    def test_a_symlink_to_a_real_file_is_refused_too(self, tmp_path, monkeypatch):
+        (tmp_path / "composer.json").write_text('{"require": {}}')
+        (tmp_path / "elsewhere.lock").write_text('{"packages": []}')
+        (tmp_path / "composer.lock").symlink_to(tmp_path / "elsewhere.lock")
+        monkeypatch.setattr(utils.subprocess, "run", lambda *a, **k: pytest.fail("resolved through a symlink"))
+
+        with pytest.raises(SBOMGenerationError, match="symlink"):
+            resolve_composer_lockfile(tmp_path)
+
+    def test_a_lock_that_is_not_a_regular_file_inside_the_project_is_not_used(
+        self, tmp_path, composer_runs, monkeypatch
+    ):
+        """Checked again after Composer runs, before the caller registers the
+        file for deletion: whatever is there now must be ours to delete."""
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.lock"
+        outside.write_text("not ours")
+        (tmp_path / "composer.json").write_text('{"require": {}}')
+
+        def leaves_a_link(cmd, **kwargs):
+            (tmp_path / "composer.lock").symlink_to(outside)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(utils.subprocess, "run", leaves_a_link)
+
+        with pytest.raises(SBOMGenerationError, match="regular"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert outside.read_text() == "not ours"
+
     def test_the_generator_removes_the_lock_it_created(self, tmp_path, monkeypatch, composer_runs):
         """A working file. Left in the checkout, it would also stop the SBOM
         saying its versions were inferred."""
