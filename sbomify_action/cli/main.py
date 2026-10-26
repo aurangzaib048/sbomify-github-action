@@ -2675,8 +2675,13 @@ def run_pipeline(config: Config) -> None:
 
         # Enrichment clears file:, link: and path PURLs as it writes its
         # output. Without it they would reach the final SBOM, so do it here.
+        # Best effort, like step 1's SPDX licence clean-up: a PURL left in place
+        # is better than a run that dies before writing or uploading anything.
         if is_sbom and not config.enrich:
-            sanitize_cyclonedx_json_file_purls(final_sbom_file)
+            try:
+                sanitize_cyclonedx_json_file_purls(final_sbom_file)
+            except (OSError, ValueError) as e:
+                logger.warning(f"PURL clean-up skipped, the SBOM keeps its PURLs as they were: {e}")
 
         _write_final_output(final_sbom_file, config.output_file, config.bom_type)
 

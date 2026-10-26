@@ -352,7 +352,9 @@ def sanitize_cyclonedx_json_file_purls(file_path: str) -> tuple[int, int]:
     Returns:
         Tuple of (purls_normalized, purls_cleared)
     """
-    with open(file_path, encoding="utf-8") as f:
+    # utf-8-sig, as step 1 reads the input: it accepts a BOM and copies the file
+    # as is. The dump below writes plain utf-8, so a BOM only goes when a PURL changed.
+    with open(file_path, encoding="utf-8-sig") as f:
         data = json.load(f)
     if not isinstance(data, dict) or data.get("bomFormat") != "CycloneDX":
         return 0, 0
