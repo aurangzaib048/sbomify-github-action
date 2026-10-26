@@ -143,14 +143,14 @@ def test_overrides_land_on_the_described_package(tmp_path, monkeypatch, spdx_ver
         assert root["name"] == NAME
 
 
-def test_additional_packages_alone_are_not_renamed(tmp_path, monkeypatch):
-    """An SBOM built only from ADDITIONAL_PACKAGES describes nothing; the first
-    injected package is a dependency like any other."""
+def run_on_additional_packages(tmp_path: Path, monkeypatch, spec_version: str | None = None) -> dict:
+    """An SBOM built only from ADDITIONAL_PACKAGES, which describes nothing."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ADDITIONAL_PACKAGES", "pkg:pypi/requests@2.32.0")
     config = build_config(
         lock_file="none",
         sbom_format="spdx",
+        spec_version=spec_version,
         upload=False,
         augment=True,
         component_name=NAME,
@@ -159,8 +159,13 @@ def test_additional_packages_alone_are_not_renamed(tmp_path, monkeypatch):
         output_file="out.spdx.json",
     )
     run_pipeline(config)
+    return json.loads((tmp_path / "out.spdx.json").read_text())
 
-    result = json.loads((tmp_path / "out.spdx.json").read_text())
+
+def test_additional_packages_alone_are_not_renamed(tmp_path, monkeypatch):
+    """The first injected package is a dependency like any other."""
+    result = run_on_additional_packages(tmp_path, monkeypatch)
+
     [requests] = result["packages"]
     assert (requests["name"], requests["versionInfo"], purls(requests)) == (
         "requests",
@@ -168,6 +173,19 @@ def test_additional_packages_alone_are_not_renamed(tmp_path, monkeypatch):
         ["pkg:pypi/requests@2.32.0"],
     )
     assert result["name"] == NAME
+
+
+def test_additional_packages_alone_are_not_renamed_in_spdx3(tmp_path, monkeypatch):
+    result = run_on_additional_packages(tmp_path, monkeypatch, spec_version="3.0.1")
+
+    [requests] = [e for e in result["@graph"] if e.get("type") == "software_Package"]
+    assert (requests["name"], requests["software_packageVersion"], requests["software_packageUrl"]) == (
+        "requests",
+        "2.32.0",
+        "pkg:pypi/requests@2.32.0",
+    )
+    [document] = [e for e in result["@graph"] if e.get("type") == "SpdxDocument"]
+    assert document["name"] == NAME
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +306,47 @@ def test_augmentation_of_a_document_describing_nothing_changes_no_package(caplog
     assert snapshot(augmented) == before
     assert augmented.creation_info.name == NAME
     assert "describes no package" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# SPDX 3, where the root is the document's rootElement.
+
+
+def spdx3_with_a_dependency_first(described: bool) -> dict:
+    document = json.loads((Path(__file__).parent / "test-data" / "spdx3_minimal.json").read_text())
+    graph = document["@graph"]
+    dependency = {**graph[2], "spdxId": "urn:spdx.dev:pkg-dep", "name": "arrow"}
+    dependency.update(software_packageVersion="1.4.0", software_packageUrl="pkg:pypi/arrow@1.4.0")
+    graph.insert(2, dependency)
+    graph[0]["element"].append("urn:spdx.dev:pkg-dep")
+    if not described:
+        graph[0]["rootElement"] = []
+    return document
+
+
+def spdx3_packages(document: dict) -> dict[str, tuple]:
+    return {
+        e["spdxId"]: (e["name"], e.get("software_packageVersion"), e.get("software_packageUrl"))
+        for e in document["@graph"]
+        if e.get("type") == "software_Package"
+    }
+
+
+@pytest.mark.parametrize("described", [True, False], ids=["root-described", "nothing-described"])
+def test_spdx3_overrides_land_on_the_root_element(tmp_path, described):
+    document = spdx3_with_a_dependency_first(described)
+    path = tmp_path / "sbom.spdx3.json"
+    path.write_text(json.dumps(document))
+
+    config = Cfg()
+    cli_main._apply_sbom_version_override(str(path), config)
+    cli_main._apply_sbom_name_override(str(path), config)
+    cli_main._apply_sbom_purl_override(str(path), config)
+
+    result = json.loads(path.read_text())
+    packages = spdx3_packages(result)
+    assert packages["urn:spdx.dev:pkg-dep"] == ("arrow", "1.4.0", "pkg:pypi/arrow@1.4.0")
+    expected = (NAME, VERSION, PURL) if described else spdx3_packages(document)["urn:spdx.dev:pkg-test"]
+    assert packages["urn:spdx.dev:pkg-test"] == expected
+    [spdx_document] = [e for e in result["@graph"] if e.get("type") == "SpdxDocument"]
+    assert spdx_document["name"] == NAME
