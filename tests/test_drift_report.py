@@ -429,6 +429,16 @@ class TestCompare:
         assert drift is not None
         assert drift.changed == ["libc6 2.36-9 → 2.36-9+deb12u7"]
 
+    def test_a_missing_version_reads_as_none(self, tmp_path):
+        """Not `a  → 1`: an empty version vanishes beside the arrow."""
+        unversioned, versioned = _cdx(_lib("a", "", purl=False)), _cdx(_lib("a", "1", purl=False))
+
+        gained = self._compare(tmp_path, unversioned, versioned)
+        lost = self._compare(tmp_path, versioned, unversioned)
+
+        assert gained is not None and gained.changed == ["a (none) → 1"]
+        assert lost is not None and lost.changed == ["a 1 → (none)"]
+
     def test_lists_are_capped_and_say_how_many_are_left(self, tmp_path):
         previous = _cdx()
         current = _cdx(*(_lib(f"pkg{i:03}", "1.0") for i in range(60)))

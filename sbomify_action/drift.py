@@ -121,6 +121,11 @@ def _label(package: _Package) -> str:
     return f"{package.name}@{versions}" if versions else package.name
 
 
+def _versions(package: _Package) -> str:
+    """Every version, an empty one as ``(none)``: blank beside an arrow, it is easy to miss."""
+    return ", ".join(sorted(v or "(none)" for v in package.versions))
+
+
 def _code(text: str) -> str:
     """A code span the text cannot close early: a component name is whatever the SBOM says."""
     return "`" + " ".join(text.replace("`", "'").split()) + "`"
@@ -229,7 +234,7 @@ def _compare(previous: Previous, current_path: str) -> Drift | None:
         added=[_label(new[k]) for k in sorted(new.keys() - old.keys())],
         removed=[_label(old[k]) for k in sorted(old.keys() - new.keys())],
         changed=[
-            f"{new[k].name} {', '.join(sorted(old[k].versions))} → {', '.join(sorted(new[k].versions))}"
+            f"{new[k].name} {_versions(old[k])} → {_versions(new[k])}"
             for k in sorted(old.keys() & new.keys())
             if old[k].versions != new[k].versions
         ],
