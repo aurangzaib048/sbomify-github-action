@@ -572,10 +572,33 @@ class TestCdxgenFsGenerator(unittest.TestCase):
         mock_exists.return_value = True
 
         for name in [*CDXGEN_LOCK_FILES, "widget.csproj"]:
+            if name in ("build.gradle", "build.gradle.kts"):
+                continue  # see test_generate_lets_gradle_resolve
             with self.subTest(name):
                 self.generator.generate(GenerationInput(lock_file=f"/path/to/{name}", output_file="sbom.json"))
                 cmd = mock_run.call_args[0][0]
                 self.assertIn("--no-install-deps", cmd)
+
+    @patch("sbomify_action._generation.generators.cdxgen.ensure_java_maven_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.run_command")
+    @patch("pathlib.Path.exists")
+    def test_generate_lets_gradle_resolve(self, mock_exists, mock_run, _):
+        """Except for Gradle, where the flag removes components and no risk.
+
+        cdxgen runs `gradle properties` before it reads the flag, and that
+        evaluates build.gradle, so the project's code runs either way. The flag
+        only skips the dependencies task, which is where the components come
+        from: 8 without it, 0 with it, with a canary in build.gradle firing
+        both times.
+        """
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_exists.return_value = True
+
+        for name in ("build.gradle", "build.gradle.kts"):
+            with self.subTest(name):
+                self.generator.generate(GenerationInput(lock_file=f"/path/to/{name}", output_file="sbom.json"))
+                cmd = mock_run.call_args[0][0]
+                self.assertNotIn("--no-install-deps", cmd)
 
     @patch("sbomify_action._generation.generators.cdxgen.run_command")
     @patch("pathlib.Path.exists")

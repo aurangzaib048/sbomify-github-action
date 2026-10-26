@@ -240,7 +240,16 @@ class CdxgenFsGenerator:
         # builds a pyproject.toml or setup.py, composer runs the root
         # package's scripts, bundler evaluates the Gemfile, dotnet restore
         # evaluates MSBuild. An SBOM step must read the project, not run it.
-        cmd.append("--no-install-deps")
+        #
+        # Except Gradle, where the flag buys nothing. cdxgen runs `gradle
+        # properties` before it reads the flag, and that evaluates build.gradle,
+        # so the project's code runs either way. All the flag does there is
+        # skip the dependencies task, which is where every component comes
+        # from: measured 8 components without it and 0 with it, a canary in
+        # build.gradle firing both times. JVM builds execute project code
+        # whatever cdxgen is told, so no flag can make them safe.
+        if lock_file_name not in ("build.gradle", "build.gradle.kts"):
+            cmd.append("--no-install-deps")
 
         # Scan current directory (we'll cd into lock file directory)
         cmd.append(".")
