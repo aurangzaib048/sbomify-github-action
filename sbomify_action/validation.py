@@ -134,7 +134,7 @@ def _get_schema_registry() -> Registry:
     from cyclonedx.schema._res import SPDX_JSON
 
     # Load the SPDX license schema from cyclonedx-python-lib
-    with open(SPDX_JSON) as f:
+    with open(SPDX_JSON, encoding="utf-8") as f:
         spdx_schema = json.load(f)
 
     # Create registry with the SPDX schema pre-registered
@@ -207,7 +207,7 @@ def _load_schema(schema_path: Path) -> dict[str, Any] | None:
         logger.warning(f"Schema file not found: {schema_path}")
         return None
 
-    with open(schema_path) as f:
+    with open(schema_path, encoding="utf-8") as f:
         schema: dict[str, Any] = json.load(f)
         _schema_cache[cache_key] = schema
         return schema
