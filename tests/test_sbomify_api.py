@@ -851,7 +851,8 @@ def test_latest_component_sbom_reads_one_page_and_takes_the_newest_in_the_format
     assert client.latest_component_sbom("c1", "cyclonedx") == newest
     assert session.request.call_count == 1
     assert session.request.call_args.args[1] == "https://api.test/api/v1/components/c1/sboms"
-    assert session.request.call_args.kwargs["params"]["format"] == "cyclonedx"
+    # A small page: the backend builds vulnerability, release and assessment data per row.
+    assert session.request.call_args.kwargs["params"] == {"format": "cyclonedx", "page_size": 10}
 
 
 def test_latest_component_sbom_is_none_before_the_first_upload() -> None:

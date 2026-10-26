@@ -537,7 +537,10 @@ class SbomifyApiClient:
 
         One page of ``GET /api/v1/components/{id}/sboms``, which is newest
         first, rather than the whole history ``list_component_sboms`` walks.
-        The format is re-checked client-side, as in ``find_component_sbom``.
+        A small page: only the first match is used, and the backend builds
+        vulnerability, release and assessment data for every row. Ten still
+        leaves room for the format recheck, done client-side as in
+        ``find_component_sbom``.
 
         A 403 raises ``ForbiddenError``: a token that may upload to a
         component cannot always read it back -- the OIDC trusted-publishing
@@ -547,7 +550,7 @@ class SbomifyApiClient:
         response = self._request(
             "GET",
             f"/api/v1/components/{component_id}/sboms",
-            params={"format": sbom_format, "page_size": DEFAULT_PAGE_SIZE},
+            params={"format": sbom_format, "page_size": 10},
         )
         if response.status_code == 403:
             raise ForbiddenError(self._build_error("Failed to list component SBOMs.", response))
