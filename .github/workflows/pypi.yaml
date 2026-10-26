@@ -160,7 +160,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PROD_TOKEN: ${{ github.event_name == 'release' && secrets.SBOMIFY_TOKEN || '' }}
           STAGE_TOKEN: ${{ github.event_name != 'release' && secrets.SBOMIFY_STAGE_TOKEN || '' }}
-          COMPONENT_ID: 'XNsX40tonzvv'
           COMPONENT_NAME: 'sbomify Action'
           LOCK_FILE: uv.lock
           SBOM_FORMAT: cyclonedx
@@ -169,11 +168,19 @@ jobs:
           ENRICH: "true"
           UPLOAD: "false"
         run: |
+          # Component IDs are per environment, as in sboms.yml's "sbomify Action" rows
           if [[ "${EVENT_NAME}" == "release" ]]; then
-            export TOKEN="${PROD_TOKEN}" API_BASE_URL="https://app.sbomify.com"
+            export TOKEN="${PROD_TOKEN}" API_BASE_URL="https://app.sbomify.com" COMPONENT_ID="Gu9wem8mkX"
           else
-            export TOKEN="${STAGE_TOKEN}" API_BASE_URL="https://stage.sbomify.com"
+            export TOKEN="${STAGE_TOKEN}" API_BASE_URL="https://stage.sbomify.com" COMPONENT_ID="XNsX40tonzvv"
           fi
+          # Without a token the CLI skips augmentation and still passes, so the
+          # wheel would ship a bare SBOM; e.g. a secret scoped to an environment
+          # this job doesn't use.
+          : "${TOKEN:?sbomify token missing for ${EVENT_NAME}}"
+          # The placeholder is committed, so remove it: the upload below then
+          # fails if generation didn't write the file.
+          rm -f sbomify-action.cdx.json
           uv run --frozen --no-dev sbomify-action
 
       - name: Upload SBOM
