@@ -11,6 +11,9 @@ on:
         required: false
         default: 'all'
 
+permissions:
+  contents: read
+
 jobs:
   # The matrix is derived from the generator's own configuration rather than
   # duplicated here, so a new distro release cannot be added to the code and
@@ -18,6 +21,8 @@ jobs:
   prepare-matrix:
     name: Resolve Distro Matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:

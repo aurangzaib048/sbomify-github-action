@@ -36,6 +36,8 @@ on:
 concurrency:
   group: sboms-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
+permissions:
+  contents: read
 jobs:
   sbom:
     name: ${{ matrix.name }}-${{ github.event.workflow_run.head_branch == 'master' && 'staging' || 'production' }}

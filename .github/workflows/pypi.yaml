@@ -8,6 +8,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
   build-and-publish-testpypi:
     name: Build and publish to TestPyPI

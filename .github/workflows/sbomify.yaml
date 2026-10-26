@@ -11,6 +11,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 env:
   IMAGE_NAME: sbomify-action
 
@@ -18,6 +21,8 @@ jobs:
   sanity-checks:
     name: Sanity Checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,6 +60,8 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,6 +109,8 @@ jobs:
   container-tests:
     name: Container Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,6 +135,8 @@ jobs:
   license-db-integration-test:
     name: License DB Integration Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -409,6 +420,8 @@ jobs:
   cle-integration-test:
     name: CLE Lifecycle Integration Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -528,6 +541,8 @@ jobs:
   augmentation-integration-test:
     name: Augmentation Integration Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Code Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
