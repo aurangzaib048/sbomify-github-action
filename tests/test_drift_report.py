@@ -429,6 +429,22 @@ class TestCompare:
         assert drift is not None
         assert drift.changed == ["libc6 2.36-9 → 2.36-9+deb12u7"]
 
+    def test_a_component_that_loses_or_gains_its_purl_is_one_change(self, tmp_path):
+        """A generator that stops emitting PURLs must read as that, not as each package removed and re-added."""
+        previous = _cdx(_lib("a", "1"), _lib("b", "1", purl=False), _lib("gone", "1"))
+        current = _cdx(_lib("a", "2", purl=False), _lib("b", "1"), _lib("new", "1"))
+
+        drift = self._compare(tmp_path, previous, current)
+
+        assert drift is not None
+        assert (drift.added, drift.removed) == (["new@1"], ["gone@1"])
+        assert drift.purls == ["a@2: pkg:pypi/a → (none)", "b@1: (none) → pkg:pypi/b"]
+        assert drift.changed == ["a 1 → 2"]  # the same package, so its version change still counts
+        markdown = drift.markdown()
+        assert "**PURL changed:** 2" in markdown
+        assert "<summary>PURL changed (2)</summary>" in markdown
+        assert "`a@2: pkg:pypi/a → (none)`" in markdown
+
     def test_a_missing_version_reads_as_none(self, tmp_path):
         """Not `a  → 1`: an empty version vanishes beside the arrow."""
         unversioned, versioned = _cdx(_lib("a", "", purl=False)), _cdx(_lib("a", "1", purl=False))

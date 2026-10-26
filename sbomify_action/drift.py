@@ -126,6 +126,11 @@ def _versions(package: _Package) -> str:
     return ", ".join(sorted(v or "(none)" for v in package.versions))
 
 
+def _purl(key: str, package: _Package) -> str:
+    """The PURL a package is keyed by, or ``(none)`` when it fell back to its name."""
+    return "(none)" if key == package.name else key
+
+
 def _code(text: str) -> str:
     """A code span the text cannot close early: a component name is whatever the SBOM says."""
     return "`" + " ".join(text.replace("`", "'").split()) + "`"
@@ -141,6 +146,7 @@ class Drift:
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
+    purls: list[str] = field(default_factory=list)
     suppliers: int = 0
     licenses: int = 0
 
@@ -176,10 +182,15 @@ class Drift:
         lines += [
             f"- **Components:** {self.before} → {self.after}",
             f"- **Added:** {len(self.added)} · **Removed:** {len(self.removed)}"
-            f" · **Version changed:** {len(self.changed)}",
+            f" · **Version changed:** {len(self.changed)} · **PURL changed:** {len(self.purls)}",
             f"- **Supplier changed:** {self.suppliers} · **License changed:** {self.licenses}",
         ]
-        for title, entries in (("Added", self.added), ("Removed", self.removed), ("Version changed", self.changed)):
+        for title, entries in (
+            ("Added", self.added),
+            ("Removed", self.removed),
+            ("Version changed", self.changed),
+            ("PURL changed", self.purls),
+        ):
             if not entries:
                 continue
             lines += ["", f"<details><summary>{title} ({len(entries)})</summary>", ""]
@@ -223,21 +234,38 @@ def _compare(previous: Previous, current_path: str) -> Drift | None:
         logger.warning(f"No drift report: {source} is not a CycloneDX or SPDX 2 JSON document")
         return None
     (before_count, old), (after_count, new) = before, current
+    added, removed = sorted(new.keys() - old.keys()), sorted(old.keys() - new.keys())
+
+    # A component that lost or gained its PURL is keyed by name on one side only. Pairing the
+    # leftovers by name makes a generator that stopped emitting PURLs read as that, not as
+    # every such package removed and added again.
+    # ponytail: any two same-named leftovers pair, so npm `debug` swapped for PyPI `debug`
+    # reads as a PURL change too; require a PURL-less side if that ever misleads.
+    unpaired: dict[str, list[str]] = {}
+    for k in added:
+        unpaired.setdefault(new[k].name, []).append(k)
+    moved: list[tuple[str, str]] = []
+    for k in removed:
+        if candidates := unpaired.get(old[k].name):
+            moved.append((k, candidates.pop(0)))
+    pairs = sorted([(k, k) for k in old.keys() & new.keys()] + moved, key=lambda pair: pair[1])
+    gone, came = {o for o, _ in moved}, {n for _, n in moved}
 
     def both(attribute: str) -> int:
-        return sum(getattr(old[k], attribute) != getattr(new[k], attribute) for k in old.keys() & new.keys())
+        return sum(getattr(old[o], attribute) != getattr(new[n], attribute) for o, n in pairs)
 
     return Drift(
         source=source,
         before=before_count,
         after=after_count,
-        added=[_label(new[k]) for k in sorted(new.keys() - old.keys())],
-        removed=[_label(old[k]) for k in sorted(old.keys() - new.keys())],
+        added=[_label(new[k]) for k in added if k not in came],
+        removed=[_label(old[k]) for k in removed if k not in gone],
         changed=[
-            f"{new[k].name} {_versions(old[k])} → {_versions(new[k])}"
-            for k in sorted(old.keys() & new.keys())
-            if old[k].versions != new[k].versions
+            f"{new[n].name} {_versions(old[o])} → {_versions(new[n])}"
+            for o, n in pairs
+            if old[o].versions != new[n].versions
         ],
+        purls=[f"{_label(new[n])}: {_purl(o, old[o])} → {_purl(n, new[n])}" for o, n in pairs if o != n],
         suppliers=both("suppliers"),
         licenses=both("licenses"),
     )
