@@ -19,6 +19,13 @@
 #      runs the CI/CD Pipeline, PyPI and license-db, and after CI the
 #      production SBOMs, as before. release/vX can be deleted afterwards.
 #
+# If the pin job fails, fix the cause and use "Re-run failed jobs". The
+# re-run keeps this run's digest, and scripts/draft_release.sh reuses
+# release/vX and a draft vX that already hold this pin. "Re-run all jobs"
+# stops at check because release/vX exists, which is deliberate: building
+# again would move :X to a new digest. To start over anyway, delete
+# release/vX and any draft vX, then run the workflow again.
+#
 # This workflow does not create the tag or publish the release itself:
 # events made with GITHUB_TOKEN do not start other workflows, so PyPI,
 # license-db and the production SBOMs would silently not run.
@@ -78,6 +85,8 @@ jobs:
 
           # A published release always has its tag, and a draft left by an
           # earlier run of this workflow has its release/v<version> branch.
+          # A draft whose branch was deleted is invisible to this read-only
+          # token; draft_release.sh in the pin job refuses it instead.
           EXISTING=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/heads/release/v${VERSION}")
           if [ -n "${EXISTING}" ]; then
             echo "::error::v${VERSION} is already released or under way: ${EXISTING}"
@@ -133,23 +142,4 @@ jobs:
           GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: |
-          scripts/pin_release_image.sh "${VERSION}" "${DIGEST}"
-          git commit --all \
-            -m "Release v${VERSION}: pin image to ${DIGEST}" \
-            -m "action.yml, pipe.yml and the Bitbucket sample run sbomify-action:${VERSION}@${DIGEST}, so v${VERSION} keeps running this image after :latest moves on."
-          PIN_SHA=$(git rev-parse HEAD)
-          git push origin "HEAD:refs/heads/release/v${VERSION}"
-
-          URL=$(gh release create "v${VERSION}" --draft --target "${PIN_SHA}" --title "v${VERSION}" --generate-notes)
-
-          {
-            echo "## Draft release v${VERSION} is ready to review"
-            echo
-            echo "- Image: \`ghcr.io/sbomify/sbomify-action:${VERSION}@${DIGEST}\`, mirrored to \`sbomifyhub/sbomify-action\`"
-            echo "- Pin commit: \`${PIN_SHA}\` on branch \`release/v${VERSION}\`"
-            echo "- Draft: ${URL}"
-            echo
-            echo "Review the draft and publish it. Publishing creates tag \`v${VERSION}\`, which runs the CI/CD Pipeline" \
-              "(its verify-release-pin job checks this pin), PyPI, license-db and the production SBOMs."
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: scripts/draft_release.sh "${VERSION}" "${DIGEST}"
