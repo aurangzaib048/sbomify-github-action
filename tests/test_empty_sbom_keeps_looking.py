@@ -222,3 +222,52 @@ def test_the_empty_returned_is_the_highest_priority_one(tmp_path):
     assert result.generator_name == "cyclonedx-maven", (
         "the empty result handed back should be the preferred generator's"
     )
+
+
+def _lock_input(tmp_path, name, content):
+    lock = tmp_path / name
+    lock.write_text(content)
+    return GenerationInput(lock_file=str(lock), output_file=str(tmp_path / "sbom.json"), output_format="cyclonedx")
+
+
+def test_a_lock_file_with_content_that_yields_nothing_fails(tmp_path):
+    """#384: a real package-lock.json went in, every generator found nothing,
+    and the run passed with an SBOM that reads as "no dependencies".
+
+    A lock file records a resolution, so one with content and an SBOM with
+    nothing in it cannot both be right. Fail, and say who tried what.
+    """
+    registry = GeneratorRegistry()
+    registry.register(_Stub("cdxgen-fs", 10, []))
+    registry.register(_Stub("syft-fs", 20, []))
+
+    result = registry.generate(
+        _lock_input(tmp_path, "package-lock.json", '{"lockfileVersion": 3, "packages": {"node_modules/a": {}}}'),
+        validate=False,
+    )
+
+    assert not result.success
+    assert "package-lock.json" in result.error_message
+    assert "cdxgen-fs" in result.error_message
+    assert "syft-fs" in result.error_message
+
+
+def test_an_empty_lock_file_may_yield_nothing(tmp_path):
+    """Nothing in, nothing out: there is no contradiction to fail on."""
+    registry = GeneratorRegistry()
+    registry.register(_Stub("syft-fs", 10, []))
+
+    result = registry.generate(_lock_input(tmp_path, "uv.lock", ""), validate=False)
+
+    assert result.success
+
+
+def test_a_manifest_that_yields_nothing_is_still_returned(tmp_path):
+    """A manifest records no resolution, so nothing from one is not the
+    contradiction a lock file makes it. It keeps the warning."""
+    registry = GeneratorRegistry()
+    registry.register(_Stub("syft-fs", 10, []))
+
+    result = registry.generate(_lock_input(tmp_path, "package.json", '{"name": "x"}'), validate=False)
+
+    assert result.success

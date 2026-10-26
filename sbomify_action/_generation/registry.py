@@ -589,6 +589,30 @@ class GeneratorRegistry:
         # entitled to exactly that, and refusing it would be worse than
         # reporting it -- so hand it back, saying clearly what it contains.
         if empty is not None:
+            # Except from a lock file with something in it (#384). A lock file
+            # records a resolution, so a non-empty one and an SBOM with nothing
+            # in it cannot both be right, and the empty document would read as
+            # "this project has no dependencies": a false statement that passes
+            # schema validation, uploads cleanly, and is never looked at again.
+            lock_file = input.lock_file
+            if (
+                lock_file
+                and records_a_resolution(lock_file)
+                and os.path.isfile(lock_file)
+                and os.path.getsize(lock_file) > 0
+            ):
+                name = os.path.basename(lock_file)
+                return GenerationResult.failure_result(
+                    error_message=(
+                        f"No generator found a component in '{name}', although it is a lock file and not "
+                        f"empty ({'; '.join(errors)}). An SBOM with no components would say this project has "
+                        f"no dependencies, so none was written. Check that LOCK_FILE points at the project "
+                        f"you mean, and that '{name}' lists its dependencies."
+                    ),
+                    sbom_format=input.output_format,
+                    spec_version=input.spec_version or "default",
+                    generator_name=empty_from or "none",
+                )
             logger.warning(
                 f"No generator found any components for this input; returning the empty "
                 f"SBOM from '{empty_from}'. If this project does have dependencies, they "
