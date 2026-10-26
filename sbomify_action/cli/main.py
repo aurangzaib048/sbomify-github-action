@@ -153,7 +153,6 @@ SPDX_LOGICAL_OPERATORS = [" OR ", " AND ", " WITH "]
 SBOMIFY_PRODUCTION_API = "https://app.sbomify.com"
 SBOMIFY_TOOL_NAME = "sbomify-action"
 SBOMIFY_VENDOR_NAME = "sbomify"
-LOCALHOST_PATTERNS = ["127.0.0.1", "localhost", "0.0.0.0"]
 VALID_SBOM_FORMATS: tuple[str, ...] = ("cyclonedx", "spdx")
 NONE_SENTINEL = "none"
 
@@ -657,24 +656,9 @@ class Config:
         Raises:
             ConfigurationError: If URL format is invalid
         """
-        from urllib.parse import urlparse
+        from ..http_client import validate_endpoint_url
 
-        try:
-            parsed = urlparse(self.api_base_url)
-        except Exception as e:
-            raise ConfigurationError(f"Invalid API base URL format: {e}")
-
-        # Validate scheme
-        if not parsed.scheme or parsed.scheme not in ("http", "https"):
-            raise ConfigurationError("API base URL must start with http:// or https://")
-
-        # Validate hostname
-        if not parsed.netloc:
-            raise ConfigurationError("API base URL must include a valid hostname")
-
-        # Security warning for HTTP on non-localhost
-        if parsed.scheme == "http" and not any(localhost in parsed.netloc for localhost in LOCALHOST_PATTERNS):
-            logger.warning("Using HTTP (not HTTPS) for API communication - consider using HTTPS in production")
+        validate_endpoint_url(self.api_base_url, "API_BASE_URL")
 
         # Remove trailing slash if present for consistency
         if self.api_base_url.endswith("/"):
@@ -3916,7 +3900,10 @@ def _parse_upload_destinations_callback(
     envvar="API_BASE_URL",
     default=SBOMIFY_PRODUCTION_API,
     show_default=True,
-    help="sbomify API base URL (for self-hosted instances).",
+    help=(
+        "sbomify API base URL (for self-hosted instances). Must be https://, since the API "
+        "token is sent with every request; http:// is accepted only for localhost."
+    ),
 )
 @click.option(
     "-f",

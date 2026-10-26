@@ -388,7 +388,7 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ConfigurationError) as cm:
             config.validate()
 
-        self.assertIn("API base URL must start with http:// or https://", str(cm.exception))
+        self.assertIn("API_BASE_URL must start with http:// or https://", str(cm.exception))
 
     def test_config_url_validation_missing_hostname(self):
         """Test that Config raises ConfigurationError for URLs without hostname."""
@@ -399,11 +399,10 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ConfigurationError) as cm:
             config.validate()
 
-        self.assertIn("API base URL must include a valid hostname", str(cm.exception))
+        self.assertIn("API_BASE_URL must include a valid hostname", str(cm.exception))
 
-    @patch.object(cli_main_module, "logger")
-    def test_config_url_validation_http_warning(self, mock_logger):
-        """Test that Config issues warning for HTTP on non-localhost."""
+    def test_config_url_validation_http_rejected(self):
+        """Plain HTTP to a non-loopback host would send the token unencrypted."""
         config = Config(
             token="test-token",
             component_id="test-component",
@@ -411,10 +410,11 @@ class TestConfig(unittest.TestCase):
             api_base_url="http://example.com/api",
         )
 
-        config.validate()
-        mock_logger.warning.assert_called_with(
-            "Using HTTP (not HTTPS) for API communication - consider using HTTPS in production"
-        )
+        with self.assertRaises(ConfigurationError) as cm:
+            config.validate()
+
+        self.assertIn("API_BASE_URL", str(cm.exception))
+        self.assertIn("https://", str(cm.exception))
 
     @patch.object(cli_main_module, "logger")
     def test_config_url_validation_http_localhost_no_warning(self, mock_logger):
