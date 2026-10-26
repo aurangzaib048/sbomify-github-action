@@ -333,6 +333,7 @@ def fetch_augmentation_metadata(
     token: Optional[str] = None,
     component_id: Optional[str] = None,
     config_path: Optional[str] = None,
+    allow_insecure_http: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch augmentation metadata from multiple providers.
@@ -350,6 +351,7 @@ def fetch_augmentation_metadata(
         token: Authentication token for sbomify API (optional)
         component_id: Component ID for sbomify API (optional)
         config_path: Path to JSON config file (optional, defaults to sbomify.json)
+        allow_insecure_http: API_ALLOW_INSECURE_HTTP, for the sbomify API provider
 
     Returns:
         Merged augmentation metadata dict from all providers
@@ -366,6 +368,7 @@ def fetch_augmentation_metadata(
         api_base_url=api_base_url,
         token=token,
         config_path=config_path,
+        allow_insecure_http=allow_insecure_http,
     )
 
     if metadata and metadata.has_data():
@@ -1944,6 +1947,7 @@ def augment_sbom_from_file(
     component_version: Optional[str] = None,
     validate: bool = True,
     config_path: Optional[str] = None,
+    allow_insecure_http: bool = False,
 ) -> Literal["cyclonedx", "spdx"]:
     """
     Augment SBOM file with metadata from multiple providers.
@@ -1969,6 +1973,7 @@ def augment_sbom_from_file(
         component_version: Optional component version override
         validate: Whether to validate the output SBOM (default: True)
         config_path: Path to JSON config file (optional, defaults to sbomify.json)
+        allow_insecure_http: API_ALLOW_INSECURE_HTTP, for the sbomify API provider
 
     Returns:
         SBOM format ('cyclonedx' or 'spdx')
@@ -1985,6 +1990,7 @@ def augment_sbom_from_file(
         token=token,
         component_id=component_id,
         config_path=config_path,
+        allow_insecure_http=allow_insecure_http,
     )
 
     # Detect format and parse

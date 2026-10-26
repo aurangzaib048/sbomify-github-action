@@ -80,6 +80,24 @@ VALID_DOCUMENT_TYPES = frozenset(
 VALID_COMPLIANCE_SUBCATEGORIES = frozenset({"nda", "soc2", "iso27001"})
 
 
+def validate_api_base_url(base_url: str, allow_insecure_http: bool = False) -> None:
+    """Check API_BASE_URL before the sbomify token, or an OIDC JWT, is sent to it.
+
+    Shared by Config validation, this client, and the trusted-publishing
+    exchange, so all three apply API_ALLOW_INSECURE_HTTP the same way.
+
+    Raises:
+        ConfigurationError: If the URL is not safe to send credentials to.
+    """
+    validate_endpoint_url(
+        base_url,
+        "API_BASE_URL",
+        allow_http=allow_insecure_http,
+        allow_http_setting="API_ALLOW_INSECURE_HTTP",
+        credential="the sbomify API token, or the CI job's OIDC token during trusted publishing,",
+    )
+
+
 def clean_validation_error(detail: Any) -> str | None:
     """Render an API error ``detail`` into human-readable text.
 
@@ -134,11 +152,14 @@ class SbomifyApiClient:
         *,
         timeout: int = DEFAULT_TIMEOUT,
         session: requests.Session | None = None,
+        allow_insecure_http: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
         self.session = session or requests.Session()
+        # API_ALLOW_INSECURE_HTTP, passed in by the caller rather than read here.
+        self.allow_insecure_http = allow_insecure_http
 
     # ------------------------------------------------------------------
     # plumbing
@@ -170,7 +191,7 @@ class SbomifyApiClient:
         # this covers every other caller (yocto, wizard, library use), which
         # reach the client without it. APIError because they all handle that.
         try:
-            validate_endpoint_url(self.base_url, "API_BASE_URL")
+            validate_api_base_url(self.base_url, self.allow_insecure_http)
         except ConfigurationError as e:
             raise APIError(str(e)) from e
 

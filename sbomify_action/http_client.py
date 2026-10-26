@@ -70,6 +70,7 @@ def validate_endpoint_url(
     *,
     allow_http: bool = False,
     allow_http_setting: str | None = None,
+    credential: str = "the token or API key sent with every request",
 ) -> None:
     """Refuse an endpoint URL that would put the credentials sent to it at risk.
 
@@ -87,6 +88,7 @@ def validate_endpoint_url(
             explicit user opt-in; the other checks still apply.
         allow_http_setting: The opt-in setting behind ``allow_http``, offered
             in the error and named in the warning.
+        credential: What travels with each request, for the error and warning.
 
     Raises:
         ConfigurationError: If the URL is not safe to send credentials to.
@@ -108,8 +110,8 @@ def validate_endpoint_url(
     if parts.scheme == "http" and not _is_loopback(parts.hostname):
         if allow_http:
             logger.warning(
-                f"{setting} uses plain http:// to {parts.hostname} ({allow_http_setting}=true): the "
-                "API key or token sent with every request crosses the network unencrypted."
+                f"{setting} uses plain http:// to {parts.hostname} ({allow_http_setting}=true): "
+                f"{credential} crosses the network unencrypted."
             )
             return
         opt_in = (
@@ -119,7 +121,7 @@ def validate_endpoint_url(
             else ""
         )
         raise ConfigurationError(
-            f"{setting} must use https:// for {parts.hostname}. Over plain http:// the token or "
-            "API key sent with every request crosses the network unencrypted, readable by anyone "
-            f"on the path. http:// is only accepted for localhost, 127.0.0.1 and ::1.{opt_in}"
+            f"{setting} must use https:// for {parts.hostname}. Over plain http:// {credential} "
+            "crosses the network unencrypted, readable by anyone on the path. http:// is only "
+            f"accepted for localhost, 127.0.0.1 and ::1.{opt_in}"
         )

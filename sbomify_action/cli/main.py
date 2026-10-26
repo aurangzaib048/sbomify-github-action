@@ -208,6 +208,9 @@ write `OUTPUT_FILE` at the end of the run.
 The tool can be configured via environment variables:
 - API_BASE_URL: Override the sbomify API base URL (default: https://app.sbomify.com)
   Useful for testing against development instances (e.g., http://127.0.0.1:8000)
+- API_ALLOW_INSECURE_HTTP: Accept an http:// API_BASE_URL on a host other than
+  localhost (default: false). The API token, or the CI OIDC token during trusted
+  publishing, then crosses the network unencrypted.
 
 """
 
@@ -254,6 +257,7 @@ class Config:
     product_releases: Optional[str | list[str]] = None
     submodule_path: Optional[str] = None
     api_base_url: str = SBOMIFY_PRODUCTION_API
+    api_allow_insecure_http: bool = False
     sbom_format: SBOMFormat = "cyclonedx"
     bom_type: Optional[str] = None
     spec_version: Optional[str] = None
@@ -664,9 +668,9 @@ class Config:
         Raises:
             ConfigurationError: If URL format is invalid
         """
-        from ..http_client import validate_endpoint_url
+        from ..sbomify_api import validate_api_base_url
 
-        validate_endpoint_url(self.api_base_url, "API_BASE_URL")
+        validate_api_base_url(self.api_base_url, self.api_allow_insecure_http)
 
         # Remove trailing slash if present for consistency
         if self.api_base_url.endswith("/"):
@@ -833,6 +837,7 @@ def build_config(
     product_releases: Optional[str] = None,
     submodule_path: Optional[str] = None,
     api_base_url: str = SBOMIFY_PRODUCTION_API,
+    api_allow_insecure_http: bool = False,
     sbom_format: str = "cyclonedx",
     bom_type: Optional[str] = None,
     spec_version: Optional[str] = None,
@@ -1005,6 +1010,7 @@ def build_config(
         product_releases=product_releases,
         submodule_path=normalized_submodule_path,
         api_base_url=api_base_url,
+        api_allow_insecure_http=api_allow_insecure_http,
         sbom_format=sbom_format_lower,
         bom_type=normalized_bom_type,
         spec_version=spec_version,
@@ -1063,6 +1069,9 @@ def load_config() -> Config:
         product_releases=os.getenv("PRODUCT_RELEASE"),
         submodule_path=os.getenv("SUBMODULE_PATH"),
         api_base_url=os.getenv("API_BASE_URL", SBOMIFY_PRODUCTION_API),
+        api_allow_insecure_http=evaluate_boolean(
+            os.getenv("API_ALLOW_INSECURE_HTTP", "False"), source="API_ALLOW_INSECURE_HTTP"
+        ),
         sbom_format=os.getenv("SBOM_FORMAT", "cyclonedx"),
         bom_type=os.getenv("BOM_TYPE"),
         oidc_audience=os.getenv("OIDC_AUDIENCE"),
@@ -1918,7 +1927,7 @@ def _find_existing_submodule_sbom(config: "Config", sbom_format: str) -> Optiona
 
     if not (config.token and config.component_id and config.component_version):
         return None
-    client = SbomifyApiClient(config.api_base_url, config.token)
+    client = SbomifyApiClient(config.api_base_url, config.token, allow_insecure_http=config.api_allow_insecure_http)
     try:
         return client.find_component_sbom(config.component_id, config.component_version, sbom_format)
     except APIError as e:
@@ -2002,6 +2011,7 @@ def _run_post_upload_processing(
                         component_id=config.component_id,
                         api_base_url=config.api_base_url,
                         audience=config.oidc_audience,
+                        allow_insecure_http=config.api_allow_insecure_http,
                     )
                 except (OIDCBindingMissingError, OIDCExchangeError) as exc:
                     logger.warning(
@@ -2029,6 +2039,7 @@ def _run_post_upload_processing(
             api_base_url=config.api_base_url,
             token=config.token,
             artifact_kind=artifact_kind,
+            allow_insecure_http=config.api_allow_insecure_http,
         )
 
         # Check if any processors are enabled
@@ -2089,6 +2100,7 @@ def _run_document_pipeline(config: "Config") -> None:
         token=config.token,
         component_id=config.component_id,
         api_base_url=config.api_base_url,
+        allow_insecure_http=config.api_allow_insecure_http,
         name=config.document_name,
         version=config.document_version or "1.0",
         document_type=config.document_type,
@@ -2175,6 +2187,7 @@ def run_pipeline(config: Config) -> None:
                     component_id=config.component_id,
                     api_base_url=config.api_base_url,
                     audience=config.oidc_audience,
+                    allow_insecure_http=config.api_allow_insecure_http,
                 )
                 config.token_is_oidc_minted = True
             except OIDCBindingMissingError as exc:
@@ -2609,6 +2622,7 @@ def run_pipeline(config: Config) -> None:
                 input_file=sbom_input_file,
                 output_file=STEP_2_FILE,
                 api_base_url=config.api_base_url,
+                allow_insecure_http=config.api_allow_insecure_http,
                 token=config.token,
                 component_id=config.component_id,
                 override_sbom_metadata=config.override_sbom_metadata,
@@ -2701,6 +2715,7 @@ def run_pipeline(config: Config) -> None:
                         component_id=config.component_id,
                         api_base_url=config.api_base_url,
                         audience=config.oidc_audience,
+                        allow_insecure_http=config.api_allow_insecure_http,
                     )
                 except (OIDCBindingMissingError, OIDCExchangeError) as exc:
                     logger.warning(
@@ -2724,6 +2739,7 @@ def run_pipeline(config: Config) -> None:
                     token=config.token,
                     component_id=config.component_id,
                     api_base_url=config.api_base_url,
+                    allow_insecure_http=config.api_allow_insecure_http,
                     component_name=config.component_name,
                     component_version=config.component_version,
                     destination=destination,
@@ -3910,7 +3926,21 @@ def _parse_upload_destinations_callback(
     show_default=True,
     help=(
         "sbomify API base URL (for self-hosted instances). Must be https://, since the API "
-        "token is sent with every request; http:// is accepted only for localhost."
+        "token is sent with every request; http:// is accepted only for localhost, unless "
+        "--api-allow-insecure-http is set."
+    ),
+)
+@click.option(
+    "--api-allow-insecure-http/--no-api-allow-insecure-http",
+    default=False,
+    show_default=True,
+    callback=_make_bool_envvar_callback("API_ALLOW_INSECURE_HTTP", False),
+    is_eager=True,
+    help=(
+        "Accept a plain http:// --api-base-url on a host other than localhost, for a self-hosted "
+        "sbomify on a private network. Over plain http:// the API token, or the CI job's OIDC "
+        "token during trusted publishing, crosses the network unencrypted, where anyone on the "
+        "path can read it and publish as you. [env: API_ALLOW_INSECURE_HTTP]"
     ),
 )
 @click.option(
@@ -4005,6 +4035,7 @@ def cli(
     product_releases: Optional[str],
     submodule_path: Optional[str],
     api_base_url: str,
+    api_allow_insecure_http: bool,
     sbom_format: str,
     bom_type: Optional[str],
     spec_version: Optional[str],
@@ -4151,6 +4182,7 @@ def cli(
         product_releases=product_releases,
         submodule_path=submodule_path,
         api_base_url=api_base_url,
+        api_allow_insecure_http=api_allow_insecure_http,
         sbom_format=sbom_format,
         bom_type=bom_type,
         spec_version=spec_version,
@@ -4269,6 +4301,7 @@ def yocto_cmd(
         product_id=product_id,
         release_version=release_version,
         api_base_url=api_base_url.rstrip("/"),
+        api_allow_insecure_http=bool(ctx.parent and ctx.parent.params.get("api_allow_insecure_http")),
         augment=augment,
         enrich=enrich,
         dry_run=dry_run,
@@ -4387,6 +4420,7 @@ def _run_wizard_cli(
     output_dir: Path,
     dry_run: bool,
     debug: bool,
+    api_allow_insecure_http: bool = False,
 ) -> None:
     """Validate options, build WizardOptions, and launch the Textual wizard."""
     from sbomify_action.cli.wizard.app import launch_wizard
@@ -4433,6 +4467,7 @@ def _run_wizard_cli(
         output_dir=output_dir,
         dry_run=dry_run,
         debug=debug,
+        api_allow_insecure_http=api_allow_insecure_http,
     )
     exit_code = launch_wizard(opts)
     if debug_buffer is not None:
@@ -4463,7 +4498,15 @@ def wizard_cmd(
     matching components, and writes ``.github/workflows/sboms.yml``.
     """
     token = _inherit_root_token(ctx, token)
-    _run_wizard_cli(token, api_base_url, repo_root, output_dir, dry_run, debug)
+    _run_wizard_cli(
+        token,
+        api_base_url,
+        repo_root,
+        output_dir,
+        dry_run,
+        debug,
+        bool(ctx.parent and ctx.parent.params.get("api_allow_insecure_http")),
+    )
 
 
 @cli.command("init")
@@ -4486,7 +4529,15 @@ def init_cmd(
     """
     click.echo("Note: `init` is an alias for `wizard`. Prefer `sbomify-action wizard`.", err=True)
     token = _inherit_root_token(ctx, token)
-    _run_wizard_cli(token, api_base_url, repo_root, output_dir, dry_run, debug)
+    _run_wizard_cli(
+        token,
+        api_base_url,
+        repo_root,
+        output_dir,
+        dry_run,
+        debug,
+        bool(ctx.parent and ctx.parent.params.get("api_allow_insecure_http")),
+    )
 
 
 def _inherit_root_token(ctx: click.Context, token: Optional[str]) -> Optional[str]:

@@ -448,6 +448,36 @@ class TestConfig(unittest.TestCase):
 
         self.assertIn("API_BASE_URL", str(cm.exception))
         self.assertIn("https://", str(cm.exception))
+        self.assertIn("API_ALLOW_INSECURE_HTTP", str(cm.exception))
+
+    def test_config_url_validation_http_allowed_with_opt_in(self):
+        """A self-hosted sbomify on a private network can opt in, with a warning."""
+        config = Config(
+            token="test-token",
+            component_id="test-component",
+            sbom_file="/path/to/sbom.json",
+            api_base_url="http://sbomify.corp/api",
+            api_allow_insecure_http=True,
+        )
+
+        with self.assertLogs("sbomify_action.http_client", "WARNING") as logs:
+            config.validate()
+
+        self.assertIn("API_ALLOW_INSECURE_HTTP", logs.output[0])
+        self.assertIn("unencrypted", logs.output[0])
+
+    @patch.dict(
+        os.environ,
+        {
+            "TOKEN": "t",
+            "COMPONENT_ID": "c",
+            "SBOM_FILE": "tests/test-data/valid_json.json",
+            "API_BASE_URL": "http://sbomify.corp",
+            "API_ALLOW_INSECURE_HTTP": "true",
+        },
+    )
+    def test_load_config_reads_api_allow_insecure_http(self):
+        self.assertTrue(load_config().api_allow_insecure_http)
 
     @patch.object(cli_main_module, "logger")
     def test_config_url_validation_http_localhost_no_warning(self, mock_logger):
