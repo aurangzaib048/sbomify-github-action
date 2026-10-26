@@ -10,6 +10,8 @@ That is the common case rather than a corner: PHP libraries gitignore
 composer.lock, leaving the consuming application to resolve it.
 """
 
+import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -46,10 +48,12 @@ def composer_runs(monkeypatch):
     calls: list[tuple[list[str], dict]] = []
 
     def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
+        home = (kwargs.get("env") or {}).get("HOME")
+        calls.append((cmd, {**kwargs, "home_existed": bool(home) and Path(home).is_dir()}))
         (Path(kwargs["cwd"]) / "composer.lock").write_text('{"packages": []}')
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
+    monkeypatch.delenv("SBOMIFY_FETCH_RUNTIMES", raising=False)
     monkeypatch.setattr(utils, "ensure_php_installed", lambda: None)
     monkeypatch.setattr(utils.shutil, "which", lambda n: "/usr/bin/composer" if n == "composer" else None)
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
@@ -98,6 +102,7 @@ class TestWhenItIsFetched:
     @staticmethod
     def _run(tmp_path, monkeypatch, filename: str, body: str) -> list[str]:
         fetched: list[str] = []
+        monkeypatch.delenv("SBOMIFY_FETCH_RUNTIMES", raising=False)
         monkeypatch.setattr(utils, "ensure_php_installed", lambda: fetched.append("php"))
         monkeypatch.setattr(utils.shutil, "which", lambda n: "/usr/bin/composer")
         monkeypatch.setattr(utils.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", ""))
@@ -357,6 +362,116 @@ class TestComposerJsonIsResolvedWithoutRunningTheProject:
 
         assert seen == [True], "cdxgen must run with the resolved lock in place"
         assert not (tmp_path / "composer.lock").exists()
+
+
+class TestTheManifestCannotSteerTheResolution:
+    """composer.json comes from the repository being scanned, and resolving it
+    reaches the network from inside CI. So it resolves against Packagist, over
+    TLS, with none of the job's secrets, or not at all."""
+
+    @staticmethod
+    def _manifest(tmp_path, **fields):
+        (tmp_path / "composer.json").write_text(json.dumps({"require": {}, **fields}))
+
+    def test_nothing_resolves_when_fetching_is_opted_out(self, tmp_path, monkeypatch, composer_runs):
+        """The same gate the package.json resolution has."""
+        monkeypatch.setenv("SBOMIFY_FETCH_RUNTIMES", "0")
+        self._manifest(tmp_path)
+
+        with pytest.raises(SBOMGenerationError, match="Commit a composer.lock"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert composer_runs == []
+
+    def test_the_jobs_secrets_do_not_reach_composer(self, tmp_path, monkeypatch, composer_runs):
+        secrets = ("TOKEN", "DTRACK_API_KEY", "GITHUB_TOKEN", "COMPOSER_AUTH", "COMPOSER")
+        for name in secrets:
+            monkeypatch.setenv(name, "s3cret")
+        monkeypatch.setenv("HOME", "/home/runner")
+        self._manifest(tmp_path)
+
+        resolve_composer_lockfile(tmp_path)
+
+        env = composer_runs[0][1]["env"]
+        assert not set(secrets) & env.keys()
+        assert "s3cret" not in env.values()
+        assert env["PATH"] == os.environ["PATH"], "composer and php are found on PATH"
+
+    def test_it_gets_a_scratch_home_that_is_removed_afterwards(self, tmp_path, monkeypatch, composer_runs):
+        """Not the runner's home, where a global config.json or auth.json
+        could add repositories or credentials."""
+        monkeypatch.setenv("HOME", "/home/runner")
+        self._manifest(tmp_path)
+
+        resolve_composer_lockfile(tmp_path)
+
+        env = composer_runs[0][1]["env"]
+        assert env["HOME"] != "/home/runner"
+        assert env["COMPOSER_HOME"].startswith(env["HOME"])
+        assert env["COMPOSER_CACHE_DIR"].startswith(env["HOME"])
+        assert composer_runs[0][1]["home_existed"]
+        assert not Path(env["HOME"]).exists()
+
+    def test_a_proxy_still_reaches_it(self, tmp_path, monkeypatch, composer_runs):
+        """A runner behind a proxy cannot reach Packagist without it."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        self._manifest(tmp_path)
+
+        resolve_composer_lockfile(tmp_path)
+
+        assert composer_runs[0][1]["env"]["HTTPS_PROXY"] == "http://proxy.internal:3128"
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"disable-tls": True}, {"disable-tls": "1"}, {"secure-http": False}, {"secure-http": "0"}],
+    )
+    def test_a_manifest_that_weakens_tls_is_refused(self, tmp_path, composer_runs, config):
+        """Composer reads disable-tls and secure-http from the project with no
+        environment or command-line override, so the only safe answer is no."""
+        self._manifest(tmp_path, config=config)
+
+        with pytest.raises(SBOMGenerationError, match="Commit a composer.lock"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert composer_runs == []
+
+    @pytest.mark.parametrize("config", [{}, {"secure-http": True}, {"disable-tls": False}, {"sort-packages": True}])
+    def test_tls_left_alone_resolves(self, tmp_path, composer_runs, config):
+        self._manifest(tmp_path, config=config)
+
+        assert resolve_composer_lockfile(tmp_path) == tmp_path / "composer.lock"
+
+    @pytest.mark.parametrize(
+        "repositories",
+        [
+            [{"type": "vcs", "url": "https://git.internal.example/acme/widget.git"}],
+            {"internal": {"type": "composer", "url": "http://10.0.0.5"}},
+            [{"type": "path", "url": "../elsewhere"}],
+            {"packagist.org": False},
+        ],
+    )
+    def test_a_manifest_with_its_own_repositories_is_refused(self, tmp_path, composer_runs, repositories):
+        """They can point anywhere, including hosts inside the runner's network."""
+        self._manifest(tmp_path, repositories=repositories)
+
+        with pytest.raises(SBOMGenerationError, match="repositories"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert composer_runs == []
+
+    def test_an_empty_repositories_list_resolves(self, tmp_path, composer_runs):
+        self._manifest(tmp_path, repositories=[])
+
+        assert resolve_composer_lockfile(tmp_path) == tmp_path / "composer.lock"
+
+    def test_a_manifest_that_cannot_be_read_is_refused(self, tmp_path, composer_runs):
+        """What cannot be checked is not resolved."""
+        (tmp_path / "composer.json").write_text('{"require": ')
+
+        with pytest.raises(SBOMGenerationError, match="Commit a composer.lock"):
+            resolve_composer_lockfile(tmp_path)
+
+        assert composer_runs == []
 
 
 class TestTheErrorSurvivesTheReport:

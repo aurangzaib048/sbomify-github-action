@@ -1,9 +1,11 @@
 """Shared utilities for SBOM generation."""
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -936,6 +938,17 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
     if lock.exists():
         return None
 
+    # The manifest is the scanned repository's, and resolving it reaches the
+    # network from inside CI. So: only when fetching is allowed at all, only
+    # against Packagist, and only over TLS.
+    if not fetching_is_enabled():
+        raise SBOMGenerationError(
+            "composer.json has no composer.lock beside it, and resolving one means reaching Packagist, "
+            f"which SBOMIFY_FETCH_RUNTIMES rules out. {advice}"
+        )
+    if refusal := _composer_manifest_refusal(directory / "composer.json"):
+        raise SBOMGenerationError(f"Not resolving composer.json: {refusal}. {advice}")
+
     try:
         ensure_php_installed()
     except SBOMGenerationError as e:
@@ -946,11 +959,6 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
         raise SBOMGenerationError(
             f"composer.json has no composer.lock beside it, and Composer is not on PATH to resolve one. {advice}"
         )
-
-    env = dict(os.environ)
-    if root_version := composer_root_version():
-        logger.info(f"Telling Composer this package is version {root_version}")
-        env["COMPOSER_ROOT_VERSION"] = root_version
 
     logger.info("No composer.lock beside composer.json; resolving one without running the project's scripts")
     cmd = [
@@ -963,9 +971,16 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
         "--no-interaction",
     ]
     try:
-        subprocess.run(
-            cmd, cwd=str(directory), capture_output=True, text=True, timeout=DEFAULT_TIMEOUT, check=True, env=env
-        )
+        with tempfile.TemporaryDirectory(prefix="sbomify-composer-") as home:
+            subprocess.run(
+                cmd,
+                cwd=str(directory),
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_TIMEOUT,
+                check=True,
+                env=_composer_env(Path(home)),
+            )
     except subprocess.CalledProcessError as e:
         raise SBOMGenerationError(
             f"Composer could not resolve composer.json:\n{combined_output(e.stderr, e.stdout)[-2000:]}\n{advice}"
@@ -983,6 +998,77 @@ def resolve_composer_lockfile(directory: Path) -> Path | None:
         )
     logger.info("Resolved composer.json into a temporary composer.lock for this run only")
     return lock
+
+
+#: What Composer gets from the job's environment: PATH to find itself and
+#: PHP, and what a runner may need to reach Packagist at all. Nothing else --
+#: the job holds TOKEN, DTRACK_API_KEY, GITHUB_TOKEN and the like, Composer
+#: needs none of them, and COMPOSER_AUTH or COMPOSER would let the
+#: environment rather than us decide what it reads and who it sends
+#: credentials to.
+_COMPOSER_ENV_PASSTHROUGH = (
+    "PATH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
+
+
+def _composer_env(home: Path) -> dict[str, str]:
+    """A minimal environment for resolving an untrusted composer.json.
+
+    HOME and COMPOSER_HOME are a scratch directory, so no global config.json
+    or auth.json can add repositories or credentials.
+    """
+    env = {name: os.environ[name] for name in _COMPOSER_ENV_PASSTHROUGH if name in os.environ}
+    env.update(
+        HOME=str(home),
+        COMPOSER_HOME=str(home / "composer"),
+        COMPOSER_CACHE_DIR=str(home / "cache"),
+        # The image runs as root; with scripts and plugins off there is
+        # nothing for Composer's warning to protect.
+        COMPOSER_ALLOW_SUPERUSER="1",
+    )
+    if root_version := composer_root_version():
+        logger.info(f"Telling Composer this package is version {root_version}")
+        env["COMPOSER_ROOT_VERSION"] = root_version
+    return env
+
+
+def _composer_manifest_refusal(manifest: Path) -> str | None:
+    """Why this composer.json must not be resolved here, or None.
+
+    repositories: each entry can point anywhere, including hosts inside the
+    runner's network, and turning packagist.org off goes through it too. A
+    project with private or path repositories has a lock file to commit.
+
+    disable-tls and secure-http: Composer 2.10 reads both from the project's
+    config and offers no environment or command-line override (Config::get
+    lists them as "booleans without env var support"), so a manifest that
+    weakens TLS cannot be corrected, only refused. Anything other than the
+    safe literal is refused, rather than reimplementing PHP's truthiness.
+    """
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return f"it could not be read ({e})"
+    if not isinstance(data, dict):
+        return "it is not a JSON object"
+    if data.get("repositories"):
+        return "it declares its own repositories, which can point at any host, including ones inside your network"
+    config = data.get("config") or {}
+    if not isinstance(config, dict):
+        return "its config is not a JSON object"
+    if config.get("disable-tls", False) is not False:
+        return "its config sets disable-tls, which Composer gives no way to override"
+    if config.get("secure-http", True) is not True:
+        return "its config turns off secure-http, which Composer gives no way to override"
+    return None
 
 
 #: A version Composer will accept as the root package's: a numeric core, with
