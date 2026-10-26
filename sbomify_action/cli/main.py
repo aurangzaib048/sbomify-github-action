@@ -2309,7 +2309,7 @@ def run_pipeline(config: Config) -> None:
                             spdx_data["documentNamespace"] = f"https://sbomify.com/spdx/{uuid.uuid4()}"
                         if sanitized > 0 or named:
                             with open(STEP_1_FILE, "w", encoding="utf-8") as f:
-                                json.dump(spdx_data, f, ensure_ascii=False)
+                                json.dump(spdx_data, f, indent=2, ensure_ascii=False)
                     except (OSError, json.JSONDecodeError) as e:
                         logger.warning(f"Could not sanitize SPDX licenses in input SBOM: {e}")
             elif config.docker_image:

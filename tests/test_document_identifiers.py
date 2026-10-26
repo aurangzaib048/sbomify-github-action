@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
 from sbomify_action.cli.main import build_config, run_pipeline
 
@@ -99,3 +100,12 @@ def test_spdx_sbom_file_without_namespace_survives_augmentation(tmp_path, monkey
     out = _run(tmp_path, monkeypatch, sbom_file=_spdx_file(tmp_path), augment=True)
     assert out["documentNamespace"].startswith("https://")
     assert "Example Ltd" in json.dumps(out)
+
+
+def test_spdx_sbom_file_given_a_namespace_stays_pretty_printed(tmp_path, monkeypatch):
+    # Rewritten with indent=2, as the CycloneDX fixups write theirs, so the output stays diffable.
+    src = Path(_spdx_file(tmp_path))
+    src.write_text(json.dumps(json.loads(src.read_text()), indent=2))
+    _run(tmp_path, monkeypatch, sbom_file=str(src))
+    text = (tmp_path / "out.json").read_text()
+    assert text == json.dumps(json.loads(text), indent=2, ensure_ascii=False)
