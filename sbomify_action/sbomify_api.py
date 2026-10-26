@@ -17,8 +17,8 @@ from typing import Any, Iterator
 
 import requests
 
-from sbomify_action.exceptions import APIError, AuthError, ForbiddenError, PlanLimitError
-from sbomify_action.http_client import get_default_headers
+from sbomify_action.exceptions import APIError, AuthError, ConfigurationError, ForbiddenError, PlanLimitError
+from sbomify_action.http_client import get_default_headers, validate_endpoint_url
 from sbomify_action.logging_config import logger
 
 DEFAULT_TIMEOUT = 60
@@ -166,6 +166,14 @@ class SbomifyApiClient:
         non-2xx responses are returned to the caller so they can build
         endpoint-specific error messages from the body.
         """
+        # Config.validate already checked API_BASE_URL for the main pipeline;
+        # this covers every other caller (yocto, wizard, library use), which
+        # reach the client without it. APIError because they all handle that.
+        try:
+            validate_endpoint_url(self.base_url, "API_BASE_URL")
+        except ConfigurationError as e:
+            raise APIError(str(e)) from e
+
         url = f"{self.base_url}{path}"
         content_type = "application/json" if json_body is not None else None
         headers = get_default_headers(self.token, content_type=content_type)

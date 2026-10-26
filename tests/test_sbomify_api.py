@@ -62,6 +62,24 @@ def test_request_strips_trailing_slash() -> None:
     assert url == "https://api.test/x"
 
 
+@pytest.mark.parametrize("base_url", ["http://sbomify.internal", "https://user:pw@api.test", "ftp://api.test"])
+def test_request_refuses_unsafe_base_url_without_sending(base_url: str) -> None:
+    """Callers that skip Config.validate (yocto, wizard, library use) must not
+    be able to send the token somewhere it can be read off the wire."""
+    session = MagicMock(spec=requests.Session)
+    client = SbomifyApiClient(base_url, "tok", session=session)
+    with pytest.raises(APIError, match="API_BASE_URL"):
+        client.whoami()
+    session.request.assert_not_called()
+
+
+def test_request_allows_http_to_loopback() -> None:
+    session = MagicMock(spec=requests.Session)
+    session.request = MagicMock(return_value=_FakeResponse(200, {}))
+    SbomifyApiClient("http://127.0.0.1:8000", "tok", session=session).whoami()
+    session.request.assert_called_once()
+
+
 def test_request_401_raises_auth_error() -> None:
     client, _ = _client_with([_FakeResponse(401, {"detail": "bad token"})])
     with pytest.raises(AuthError):
