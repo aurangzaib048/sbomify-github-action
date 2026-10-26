@@ -1539,24 +1539,22 @@ def _expand_lock_file_or_substitute(path: str) -> str:
 
     substitute = candidates[0]
     downgrade = (
-        "\n  It is a manifest rather than a lock file, so the versions in this\n"
-        "  SBOM will be resolved now rather than read -- see the notice below.\n"
+        " It is a manifest rather than a lock file, so the versions in this SBOM will be resolved now "
+        "rather than read -- see the notice below."
         if not locks
         else ""
     )
-    logger.warning(
-        "\n"
-        "  ┌───────────────────────────────────────────────────────────────┐\n"
-        "  │  USING A DIFFERENT INPUT THAN THE ONE YOU CONFIGURED          │\n"
-        "  └───────────────────────────────────────────────────────────────┘\n"
-        f"  LOCK_FILE names '{named.name}', which is not in this repository.\n"
-        f"  '{substitute.name}' is, and it describes the same ecosystem\n"
-        f"  ({ecosystem}), so that is what this SBOM was built from.\n"
-        f"{downgrade}"
-        "\n"
-        "  This usually means the project changed package manager. Update\n"
-        f"  LOCK_FILE to '{substitute.name}' to make the choice explicit, or\n"
-        "  set it to the file you actually want."
+    # An annotation rather than a log record, so it reaches the run page and
+    # not only a log nobody opens on a green run. One line, because a GitHub
+    # annotation ends at the first newline. The names go through !r because a
+    # .csproj is named by whoever wrote the repository, and a newline in one
+    # would end this annotation and start a workflow command.
+    log_warning(
+        f"LOCK_FILE names {named.name!r}, which is not in this repository, so this SBOM was built from "
+        f"{substitute.name!r} instead: it describes the same ecosystem ({ecosystem}).{downgrade} "
+        f"This usually means the project changed package manager. Set LOCK_FILE to {substitute.name!r} "
+        f"to make the choice explicit, or to the file you actually want.",
+        title="Using a different input than the one you configured",
     )
     return str(substitute)
 
