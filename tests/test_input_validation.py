@@ -267,6 +267,19 @@ def test_an_invalid_cyclonedx_vex_fails_the_final_check(tmp_path, monkeypatch):
     assert not (tmp_path / "out.json").exists()
 
 
+def test_a_schema_failure_is_reported_once(tmp_path, monkeypatch, caplog):
+    """validate_sbom_data logged the failure, then the step that called it
+    logged the same text again in its own message."""
+    from sbomify_action.cli.main import run_pipeline
+
+    config = _sbom_file_config(tmp_path, monkeypatch, NORMALISED_BY_THE_LIBRARY["unknown-property"])
+
+    with caplog.at_level("ERROR"), pytest.raises(SystemExit):
+        run_pipeline(config)
+
+    assert caplog.text.count("'x-vendor' was unexpected") == 1
+
+
 def test_licence_shapes_the_pipeline_repairs_pass_the_final_check(tmp_path, monkeypatch):
     """Passed through verbatim, Trivy's and cdxgen's licence shapes reach the
     final check unrepaired. Refusing them there would fail inputs that pass

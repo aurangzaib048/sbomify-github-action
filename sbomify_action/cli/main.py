@@ -1741,7 +1741,8 @@ def _check_cyclonedx_schema(data: dict[str, Any]) -> None:
         contextvars.Context().run(sanitize_cyclonedx_licenses, data)
     except Exception:  # noqa: BLE001 - best effort, as in generation; the schema below is the judge
         pass
-    result = validate_sbom_data(data, "cyclonedx", str(spec_version))
+    # Quiet, because the step that catches this logs the message it raises.
+    result = validate_sbom_data(data, "cyclonedx", str(spec_version), log_failure=False)
     if result.valid is False:
         where = f" at '{result.error_path}'" if result.error_path else ""
         raise SBOMValidationError(f"Not a valid CycloneDX {spec_version} document{where}: {result.error_message}")
