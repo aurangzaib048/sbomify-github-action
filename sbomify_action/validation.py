@@ -395,7 +395,8 @@ def validate_sbom_file_auto(file_path: str) -> ValidationResult:
         )
 
     try:
-        with open(path) as f:
+        # Read the file the way step 1's validate_sbom() does, so the two agree.
+        with open(path, encoding="utf-8-sig") as f:
             sbom_data = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return ValidationResult.failure(

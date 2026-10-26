@@ -257,6 +257,20 @@ class TestValidateSBOMFileAuto(unittest.TestCase):
                 finally:
                     Path(temp_path).unlink()
 
+    def test_utf8_bom_file_validates(self):
+        """A UTF-8 file with a byte-order mark validates, as step 1's reader accepts it."""
+        data = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1}
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as f:
+            f.write(json.dumps(data).encode("utf-8-sig"))
+            temp_path = f.name
+
+        try:
+            result = validate_sbom_file_auto(temp_path)
+            self.assertTrue(result.valid, result.error_message)
+            self.assertEqual(result.sbom_format, "cyclonedx")
+        finally:
+            Path(temp_path).unlink()
+
     def test_unknown_format(self):
         """Test auto-validating file with unknown format."""
         data = {"unknown": "format"}
