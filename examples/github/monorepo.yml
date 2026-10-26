@@ -48,7 +48,7 @@ jobs:
           UPLOAD: 'false' # 'true' to upload each package to its own component
           # TOKEN: ${{ secrets.SBOMIFY_TOKEN }}
           # COMPONENT_ID: ${{ matrix.component_id }}
-          # PRODUCT_RELEASE: '["your-product-id:${{ github.ref_name }}"]'
+          # PRODUCT_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && format('["your-product-id:{0}"]', github.ref_name) || '' }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
