@@ -15,7 +15,7 @@ inputs:
     required: false
     default: 'sbom'
   cbom-generate:
-    description: 'Generate a CBOM (Cryptography Bill of Materials) from the LOCK_FILE project via cdxgen crypto detection, and upload it with bom-type cbom. Detects JavaScript/TypeScript source-level algorithms and Java keystores and certificates; Python is not covered (use cbomkit-action for Python and Java source scanning). Mutually exclusive with SBOM_FILE.'
+    description: 'Generate a CBOM (Cryptography Bill of Materials) of the certificate, key and keystore files under the LOCK_FILE directory via cdxgen, and upload it with bom-type cbom. Algorithms in source code are not detected in any language (use cbomkit-action for Java and Python source scanning). Needs CycloneDX 1.6 or later, and fails if no cryptographic asset is found. Mutually exclusive with SBOM_FILE.'
     required: false
     default: 'false'
   sbom-format:

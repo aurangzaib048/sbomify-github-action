@@ -1548,6 +1548,21 @@ class TestCbomGenerate(unittest.TestCase):
             config.validate()
         self.assertIn("cannot be combined", str(cm.exception))
 
+    def test_cbom_generate_rejects_spec_version_below_1_6(self):
+        # cdxgen collects cryptographic assets only at CycloneDX 1.6 and later;
+        # below that it writes a document with none, which would upload as a CBOM.
+        for version in ("1.4", "1.5"):
+            with self.subTest(version=version):
+                config = self._config(lock_file="/path/to/package-lock.json", spec_version=version)
+                with self.assertRaises(ConfigurationError) as cm:
+                    config.validate()
+                self.assertIn("SPEC_VERSION", str(cm.exception))
+
+    def test_cbom_generate_accepts_spec_version_1_6_and_later(self):
+        for version in ("1.6", "1.7"):
+            with self.subTest(version=version):
+                self._config(lock_file="/path/to/package-lock.json", spec_version=version).validate()
+
     def test_cbom_generate_forces_augment_enrich_off(self):
         config = self._config(lock_file="/path/to/requirements.txt", augment=True, enrich=True)
         config.validate()

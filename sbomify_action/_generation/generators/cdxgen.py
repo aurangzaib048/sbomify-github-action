@@ -11,6 +11,7 @@ Verified capabilities (cdxgen 12.0.0):
 - Version selection: --spec-version
 """
 
+import json
 from pathlib import Path
 
 from sbomify_action.exceptions import DockerImageNotFoundError, SBOMGenerationError
@@ -79,6 +80,16 @@ CDXGEN_TYPE_MAP = {
 # top directory returns an empty document and exit code 0. Measured on the
 # real repository, recursion takes it from 4 components to 306.
 RECURSE_ECOSYSTEMS = {"java", "scala", "dotnet"}
+
+
+def _has_crypto_asset(path: str) -> bool:
+    """True when the CycloneDX document at ``path`` lists a cryptographic asset."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            components = json.load(handle).get("components") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    return any(isinstance(c, dict) and c.get("type") == "cryptographic-asset" for c in components)
 
 
 class CdxgenFsGenerator:
@@ -179,6 +190,14 @@ class CdxgenFsGenerator:
         assert lock_file_name is not None  # guaranteed by supports()
         ecosystem = get_lock_file_ecosystem(lock_file_name)
         cdxgen_type = CDXGEN_TYPE_MAP.get(ecosystem) if ecosystem else None
+        # Not for a CBOM run, which also needs recursion (see --no-recurse
+        # below). cdxgen 12.8.x scans for certificates and keystores only on
+        # its multi-project path, and a single -t, or --no-recurse without
+        # one, routes around it: on a package-lock.json fixture holding a
+        # .pem, .p12 and .jks, both found 0 cryptographic assets, and no -t
+        # with recursion found all 3.
+        if input.include_crypto:
+            cdxgen_type = None
 
         # cdxgen is fetched rather than baked in: the bun runtime plus
         # node_modules was 619MB, which every user pulled whether or not they
@@ -251,7 +270,7 @@ class CdxgenFsGenerator:
         # For ecosystems with parent/child structures (Maven, Gradle), allow recursion
         # The -t flag will still restrict scanning to only that ecosystem
         # For other ecosystems, disable recursion to avoid scanning unrelated subdirectories
-        if ecosystem not in RECURSE_ECOSYSTEMS:
+        if ecosystem not in RECURSE_ECOSYSTEMS and not input.include_crypto:
             cmd.append("--no-recurse")
 
         # Exclude dev dependencies and local workspace packages across all ecosystems
@@ -265,8 +284,10 @@ class CdxgenFsGenerator:
         if ecosystem != "go":
             cmd.append("--required-only")
 
-        # Cryptographic asset detection (CBOM): keystores, certificates, and
-        # source-derived algorithm inventory for the ecosystems cdxgen covers.
+        # Cryptographic asset detection (CBOM). In this action that means
+        # certificate, key and keystore files. cdxgen's source-level algorithm
+        # detection does not run here: its atom path needs @appthreat/atom and
+        # a JVM, which the bundle omits, and its Babel path throws under bun.
         if input.include_crypto:
             cmd.append("--include-crypto")
 
@@ -298,6 +319,22 @@ class CdxgenFsGenerator:
             if not Path(output_file_abs).exists():
                 return GenerationResult.failure_result(
                     error_message="cdxgen completed but output file not created",
+                    sbom_format="cyclonedx",
+                    spec_version=version,
+                    generator_name=self.name,
+                )
+
+            # A crypto run that found nothing has written a dependency SBOM,
+            # and uploading that as bom_type=cbom would claim an inventory it
+            # does not contain.
+            if input.include_crypto and not _has_crypto_asset(output_file_abs):
+                return GenerationResult.failure_result(
+                    error_message=(
+                        "cdxgen found no cryptographic assets, so there is no CBOM to upload. Here it "
+                        "inventories certificate, key and keystore files (.pem, .cer, .key, .pub, .gpg, "
+                        ".p12, .jks, .jceks, .bks, .keystore) under the LOCK_FILE directory; it does not "
+                        "detect algorithms in source code."
+                    ),
                     sbom_format="cyclonedx",
                     spec_version=version,
                     generator_name=self.name,

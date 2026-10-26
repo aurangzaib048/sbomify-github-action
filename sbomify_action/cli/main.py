@@ -495,6 +495,14 @@ class Config:
                 )
             if not self.lock_file or self.lock_file.lower() == NONE_SENTINEL:
                 raise ConfigurationError("CBOM_GENERATE requires LOCK_FILE (the manifest of the project to scan).")
+            # cdxgen collects cryptographic assets only at CycloneDX 1.6 and later;
+            # below that it writes a document with none in it.
+            if self.spec_version in ("1.2", "1.3", "1.4", "1.5"):
+                raise ConfigurationError(
+                    "CBOM_GENERATE needs CycloneDX 1.6 or later, where cryptographic assets exist; "
+                    f"SPEC_VERSION={self.spec_version} would produce a document with none. "
+                    "Set SPEC_VERSION to 1.6 or 1.7, or leave it unset."
+                )
 
         # Non-SBOM artifacts (VEX/CBOM/HBOM) are authored elsewhere and uploaded verbatim; the
         # action does not synthesize them (CBOM_GENERATE above is the one exception). Reject any

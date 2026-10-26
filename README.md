@@ -177,7 +177,7 @@ also available as `with:` inputs:
 | `working-dir` | `WORKING_DIR` | Directory to work in, relative to the repo root |
 | `component-purl` | `COMPONENT_PURL` | Override the component PURL in the SBOM |
 | `bom-type` | `BOM_TYPE` | `sbom` (default), `vex`, `cbom` or `hbom` |
-| `cbom-generate` | `CBOM_GENERATE` | Generate a CBOM from `LOCK_FILE` via cdxgen crypto detection and upload it as `bom_type=cbom` (implies `BOM_TYPE=cbom`; augmentation/enrichment stay off; Docker images unsupported) |
+| `cbom-generate` | `CBOM_GENERATE` | Generate a CBOM of the certificate, key and keystore files under the `LOCK_FILE` directory (via cdxgen) and upload it as `bom_type=cbom` (implies `BOM_TYPE=cbom`; needs CycloneDX 1.6+; augmentation/enrichment stay off; Docker images unsupported) |
 | `sbom-format` | `SBOM_FORMAT` | `cyclonedx` (default) or `spdx` |
 | `spec-version` | `SPEC_VERSION` | Spec version to generate. CycloneDX 1.2–1.7, SPDX 2.2 or 2.3, or SPDX 3.0.1 with `LOCK_FILE: none`. Ignored when `SBOM_FILE` names a real file |
 | `oidc-audience` | `OIDC_AUDIENCE` | Audience for trusted publishing; override for self-hosted |
@@ -188,7 +188,7 @@ A CBOM inventories the cryptographic assets in your project: algorithms, keys, c
 
 ### Generate with this action (cdxgen)
 
-The action can generate a CBOM from your project via [cdxgen](https://github.com/cdxgen/cdxgen) crypto detection (JavaScript/TypeScript source-level algorithms, plus Java keystores and certificates), and upload it with `bom-type: cbom`. cdxgen does not detect crypto in Python, or in Java source code: for those, use the [cbomkit-action recipe](#pass-through-a-cbom-from-cbomkit-action-java-python) below.
+The action can generate a CBOM with [cdxgen](https://github.com/cdxgen/cdxgen) and upload it with `bom-type: cbom`. It inventories the certificate, key and keystore files under the `LOCK_FILE` directory and its subdirectories (`.pem`, `.cer`, `.key`, `.pub`, `.gpg`, `.p12`, `.jks`, `.jceks`, `.bks`, `.keystore`), each recorded as a certificate asset with its SHA-256, the same way in every ecosystem. It does not detect algorithms in source code, in any language: for that, use the [cbomkit-action recipe](#pass-through-a-cbom-from-cbomkit-action-java-python) below.
 
 ```yaml
 - uses: sbomify/sbomify-action@master
@@ -197,10 +197,10 @@ The action can generate a CBOM from your project via [cdxgen](https://github.com
   env:
     TOKEN: ${{ secrets.SBOMIFY_TOKEN }}
     COMPONENT_ID: 'your-component-id'
-    LOCK_FILE: 'pom.xml'
+    LOCK_FILE: 'package-lock.json'
 ```
 
-`CBOM_GENERATE` implies `BOM_TYPE=cbom`, requires `LOCK_FILE` (the manifest of the project to scan), and keeps augmentation and enrichment off. Docker images are not supported for CBOM generation.
+`CBOM_GENERATE` implies `BOM_TYPE=cbom`, requires `LOCK_FILE` (the manifest of the project to scan) and CycloneDX 1.6 or later (the default), and keeps augmentation and enrichment off. A run that finds no cryptographic asset fails rather than upload an empty CBOM. Docker images are not supported for CBOM generation.
 
 ### Pass through a CBOM from cbomkit-action (Java, Python)
 
