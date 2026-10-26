@@ -282,7 +282,8 @@ def test_a_token_that_cannot_read_the_component_back_is_not_a_warning(tmp_path, 
     assert hint and all(r.levelno == logging.INFO for r in hint)
 
 
-COLLAPSED = _cdx(_lib("requests", "2.31.0"), _lib("idna", "3.7"))  # 5 -> 2: less than half
+def _deps(count: int) -> dict[str, Any]:
+    return _cdx(*(_lib(f"dep{i:02}", "1.0") for i in range(count)))
 
 
 def test_a_collapse_fails_the_run_before_anything_is_uploaded(tmp_path, summary, caplog):
@@ -290,21 +291,21 @@ def test_a_collapse_fails_the_run_before_anything_is_uploaded(tmp_path, summary,
     with _uploaded() as upload, pytest.raises(SystemExit) as exit_info:
         _run(
             tmp_path,
-            COLLAPSED,
+            _deps(4),
             upload=True,
             token="tok",
             component_id="comp-1",
-            previous_sbom=_write(tmp_path / "previous.cdx.json", PREVIOUS),
+            previous_sbom=_write(tmp_path / "previous.cdx.json", _deps(10)),
         )
 
     assert exit_info.value.code == 1
     upload.assert_not_called()
     assert (tmp_path / "sbom.cdx.json").exists()  # still there to inspect
     errors = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
-    assert "5" in errors and "2" in errors
+    assert "lists 4 components, down from 10" in errors
     assert "false" in errors.lower() and "FAIL_ON_SBOM_COLLAPSE" in errors
     section = _drift_section(summary)
-    assert "**Components:** 5 → 2" in section
+    assert "**Components:** 10 → 4" in section
     assert "FAIL_ON_SBOM_COLLAPSE" in section
 
 
@@ -312,11 +313,11 @@ def test_the_gate_can_be_turned_off_for_a_drop_that_is_real(tmp_path, summary, c
     with _uploaded() as upload, caplog.at_level(logging.WARNING):
         _run(
             tmp_path,
-            COLLAPSED,
+            _deps(4),
             upload=True,
             token="tok",
             component_id="comp-1",
-            previous_sbom=_write(tmp_path / "previous.cdx.json", PREVIOUS),
+            previous_sbom=_write(tmp_path / "previous.cdx.json", _deps(10)),
             fail_on_sbom_collapse=False,
         )
 
@@ -325,14 +326,37 @@ def test_the_gate_can_be_turned_off_for_a_drop_that_is_real(tmp_path, summary, c
     assert "FAIL_ON_SBOM_COLLAPSE=false" in _drift_section(summary)
 
 
+@pytest.mark.parametrize(("before", "after"), [(3, 1), (9, 0)])
+def test_a_small_project_can_shed_most_of_its_dependencies(tmp_path, summary, before, after):
+    """3 -> 1 is a refactor, not a broken generator. An empty SBOM from a real
+    lock file is caught where it is generated, not here."""
+    with _uploaded() as upload:
+        _run(
+            tmp_path,
+            _deps(after),
+            upload=True,
+            token="tok",
+            component_id="comp-1",
+            previous_sbom=_write(tmp_path / "previous.cdx.json", _deps(before)),
+        )
+
+    upload.assert_called_once()
+    section = _drift_section(summary)  # still reported
+    assert f"**Components:** {before} → {after}" in section
+    assert "FAIL_ON_SBOM_COLLAPSE" not in section
+
+
 def test_no_previous_sbom_means_no_gate(tmp_path, summary):
     _run(tmp_path, _cdx())  # empty, and nothing to say it used to be bigger
 
     assert (tmp_path / "sbom.cdx.json").exists()
 
 
-@pytest.mark.parametrize(("before", "after", "collapsed"), [(5, 2, True), (4, 2, False), (1, 0, True), (0, 0, False)])
-def test_collapse_means_more_than_half_gone(before, after, collapsed):
+@pytest.mark.parametrize(
+    ("before", "after", "collapsed"),
+    [(10, 4, True), (10, 5, False), (246, 0, True), (3, 1, False), (9, 0, False), (0, 0, False)],
+)
+def test_collapse_means_more_than_half_gone_from_at_least_ten(before, after, collapsed):
     assert Drift(source="`previous`", before=before, after=after).collapsed is collapsed
 
 

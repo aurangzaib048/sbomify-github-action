@@ -38,7 +38,7 @@ from ..console import (
 from ..console import (
     print_banner as console_print_banner,
 )
-from ..drift import compare_with_previous, load_previous_sbom, publish_collapse
+from ..drift import COLLAPSE_FLOOR, compare_with_previous, load_previous_sbom, publish_collapse
 from ..exceptions import (
     APIError,
     AuthError,
@@ -4007,7 +4007,8 @@ def _parse_upload_destinations_callback(
         "Fail the run, before anything is uploaded, when the SBOM lists fewer than half the "
         "components of the previous one (see --previous-sbom). A drop like that usually means "
         "generation broke, and the SBOM would read as dependencies removed: a false statement to "
-        "anyone relying on it for the NTIA minimum elements or EU CRA compliance. Turn off for a "
+        "anyone relying on it for the NTIA minimum elements or EU CRA compliance. A previous SBOM "
+        f"under {COLLAPSE_FLOOR} components is exempt: small counts move by legitimate amounts. Turn off for a "
         "release that really did shed most of its dependencies. [env: FAIL_ON_SBOM_COLLAPSE]"
     ),
 )

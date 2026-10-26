@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 #: Entries listed per category; the counts above them cover the rest.
 LIST_CAP = 25
 
+#: The collapse gate needs this many components in the previous SBOM: small counts move by legitimate amounts.
+COLLAPSE_FLOOR = 10
+
 _WHY = (
     "That usually means generation broke, not that the dependencies went away, and an SBOM "
     "missing them reads as dependencies removed: a false statement to anyone relying on it "
@@ -138,8 +141,8 @@ class Drift:
 
     @property
     def collapsed(self) -> bool:
-        """More than half the previous SBOM's components are gone."""
-        return self.after * 2 < self.before
+        """More than half the previous SBOM's components are gone, from at least COLLAPSE_FLOOR."""
+        return self.before >= COLLAPSE_FLOOR and self.after * 2 < self.before
 
     def collapse_message(self, failing: bool) -> str:
         """Why a collapse matters, for the log."""
