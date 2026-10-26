@@ -4006,8 +4006,8 @@ def _parse_upload_destinations_callback(
     default=None,
     help=(
         "Working directory (absolute, or relative to the CI platform's checkout root). Relative input "
-        "paths and sbomify.json are looked up only inside it, so a monorepo package's SBOM lists its own "
-        "dependencies, not the whole repository's. [env: WORKING_DIR]"
+        "paths are looked up only inside it, so a monorepo package's SBOM lists its own dependencies, "
+        "not the whole repository's; sbomify.json falls back to the repository root's. [env: WORKING_DIR]"
     ),
 )
 @click.option(

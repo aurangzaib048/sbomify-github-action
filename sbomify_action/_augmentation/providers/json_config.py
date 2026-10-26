@@ -154,20 +154,23 @@ class JsonConfigProvider:
         # followed by the well-known roots earlier releases probed regardless of
         # platform. This has to agree with path_expansion -- a config file and a
         # lock file sitting side by side must both be found, or neither.
+        #
+        # Except under WORKING_DIR, where path_expansion refuses a root lock file
+        # and this keeps the root config. A lock file at the root lists the whole
+        # repository's dependencies, which is a false SBOM for one package; a
+        # config there mostly carries supplier, authors and contacts, which are
+        # usually org-wide, and dropping it would cost every package the
+        # supplier and author the NTIA minimum elements and the EU CRA ask for.
         for workspace in workspace_candidates():
             if workspace == cwd or not workspace.is_dir():
                 continue
             path = workspace / DEFAULT_CONFIG_FILE
             if path.is_file():
-                if inside_working_dir(path):
-                    return path
-                logger.warning(
-                    f"Not reading '{path}': it is outside WORKING_DIR ('{cwd}'), which has no "
-                    f"{DEFAULT_CONFIG_FILE} of its own, and a config at the repository root may describe "
-                    "the repository rather than this package. If its supplier, authors and licenses "
-                    "apply here too, copy or symlink it into the working directory. Without them this "
-                    "SBOM may lack the supplier and author that the NTIA minimum elements and the EU CRA "
-                    "require."
-                )
+                if not inside_working_dir(path):
+                    logger.info(
+                        f"Using '{path}' from the repository root; '{cwd}' has none. Put a "
+                        f"{DEFAULT_CONFIG_FILE} in '{cwd}' to override it for this package."
+                    )
+                return path
 
         return None

@@ -156,6 +156,8 @@ def inside_working_dir(path: Path) -> bool:
     repository and passes every check. So a lookup that reaches a root keeps
     only what is inside the working directory -- including a path written
     relative to the root that lands there, such as ``packages/api/uv.lock``.
+    ``sbomify.json`` is the exception: it falls back to the root and says so,
+    see ``JsonConfigProvider._find_config_file``.
     """
     return _working_dir is None or path.resolve().is_relative_to(_working_dir)
 

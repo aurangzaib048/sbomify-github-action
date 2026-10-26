@@ -231,25 +231,34 @@ class TestInputsResolveInsideWorkingDir:
         assert "lock_file" not in seen, f"built from {seen.get('lock_file')}"
         assert result.exit_code != 0
 
-    def test_a_missing_sbomify_json_is_not_read_from_the_repository_root(self, monorepo):
+    def test_a_package_without_sbomify_json_falls_back_to_the_roots_and_says_so(self, monorepo, caplog):
+        """Unlike a lock file, sbomify.json mostly carries supplier, authors and
+        contacts, which are usually the same org-wide. One root file shared by
+        every package is a sensible monorepo setup, so it stays the fallback --
+        named in the log, so the run shows where that metadata came from."""
         (monorepo / "packages" / "api" / "uv.lock").write_text("version = 1\n")
 
-        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+        with caplog.at_level("INFO"):
+            result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
 
         assert result.exit_code == 0, result.output
-        assert seen["sbomify_json"] is None
+        assert seen["sbomify_json"] == monorepo / "sbomify.json"
+        assert f"Using '{monorepo / 'sbomify.json'}' from the repository root" in caplog.text
 
-    def test_a_skipped_root_sbomify_json_is_named(self, monorepo, caplog):
-        """Dropping it quietly would thin the SBOM with nothing to say why."""
-        (monorepo / "packages" / "api" / "uv.lock").write_text("version = 1\n")
+    def test_a_package_sbomify_json_beats_the_roots(self, monorepo, caplog):
+        package = monorepo / "packages" / "api"
+        (package / "uv.lock").write_text("version = 1\n")
+        (package / "sbomify.json").write_text('{"supplier": {"name": "The API team"}}')
 
-        with caplog.at_level("WARNING"):
-            _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+        with caplog.at_level("INFO"):
+            result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
 
-        assert str(monorepo / "sbomify.json") in caplog.text
+        assert result.exit_code == 0, result.output
+        assert seen["sbomify_json"] == package / "sbomify.json"
+        assert "from the repository root" not in caplog.text
 
     def test_a_symlinked_root_sbomify_json_is_read(self, monorepo):
-        """The opt-in the warning above offers."""
+        """Linking the root file in is the package's own file, not a fallback."""
         package = monorepo / "packages" / "api"
         (package / "uv.lock").write_text("version = 1\n")
         (package / "sbomify.json").symlink_to("../../sbomify.json")
