@@ -63,3 +63,39 @@ def test_serial_number_helper_leaves_unparseable_content_alone():
 
     assert _add_serial_number_if_missing("not json") == "not json"
     assert _add_serial_number_if_missing("[]") == "[]"
+
+
+def _spdx_file(tmp_path, **extra) -> str:
+    src = tmp_path / "in.spdx.json"
+    document = {
+        "spdxVersion": "SPDX-2.3",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "app",
+        "dataLicense": "CC0-1.0",
+        "creationInfo": {"created": "2026-01-01T00:00:00Z", "creators": ["Tool: test"]},
+        **extra,
+    }
+    src.write_text(json.dumps(document))
+    return str(src)
+
+
+def test_spdx_sbom_file_without_namespace_gets_a_unique_one(tmp_path, monkeypatch):
+    first = _run(tmp_path, monkeypatch, sbom_file=_spdx_file(tmp_path))["documentNamespace"]
+    second = _run(tmp_path, monkeypatch, sbom_file=_spdx_file(tmp_path))["documentNamespace"]
+    assert first.startswith("https://")
+    assert first != second
+
+
+def test_spdx_sbom_file_namespace_is_kept(tmp_path, monkeypatch):
+    namespace = "https://example.com/spdxdocs/app-1.0"
+    out = _run(tmp_path, monkeypatch, sbom_file=_spdx_file(tmp_path, documentNamespace=namespace))
+    assert out["documentNamespace"] == namespace
+
+
+def test_spdx_sbom_file_without_namespace_survives_augmentation(tmp_path, monkeypatch):
+    # spdx-tools refuses to parse a document with no namespace, so augmentation
+    # and enrichment could not read one before it was given a namespace.
+    (tmp_path / "sbomify.json").write_text(json.dumps({"supplier": {"name": "Example Ltd"}}))
+    out = _run(tmp_path, monkeypatch, sbom_file=_spdx_file(tmp_path), augment=True)
+    assert out["documentNamespace"].startswith("https://")
+    assert "Example Ltd" in json.dumps(out)

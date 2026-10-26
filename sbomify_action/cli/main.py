@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import sys
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -2299,7 +2300,14 @@ def run_pipeline(config: Config) -> None:
                         with open(STEP_1_FILE, encoding="utf-8") as f:
                             spdx_data = json.load(f)
                         sanitized = sanitize_spdx_licenses(spdx_data)
-                        if sanitized > 0:
+                        # spdx_tools also refuses an SPDX 2 document with no
+                        # documentNamespace, and the namespace is the document's
+                        # identity (BSI TR-03183-2's SBOM-URI). Mint one only
+                        # where it is missing; SPDX 3 has no such field.
+                        named = "spdxVersion" in spdx_data and not spdx_data.get("documentNamespace")
+                        if named:
+                            spdx_data["documentNamespace"] = f"https://sbomify.com/spdx/{uuid.uuid4()}"
+                        if sanitized > 0 or named:
                             with open(STEP_1_FILE, "w", encoding="utf-8") as f:
                                 json.dump(spdx_data, f, ensure_ascii=False)
                     except (OSError, json.JSONDecodeError) as e:
