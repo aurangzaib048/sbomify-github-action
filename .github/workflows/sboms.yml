@@ -116,10 +116,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+      # Key the cache by day, seeded from the newest entry of the same month.
+      # A fixed key is saved once and then restored forever (actions/cache
+      # skips the save on an exact hit); this saves new data daily and
+      # starts clean each month, so nothing stale outlives its month.
+      - id: cache-date
+        run: |
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%d)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .sbomify-cache
-          key: sbomify-${{ runner.os }}
+          key: sbomify-${{ runner.os }}-${{ steps.cache-date.outputs.month }}-${{ steps.cache-date.outputs.day }}
+          restore-keys: |
+            sbomify-${{ runner.os }}-${{ steps.cache-date.outputs.month }}-
       - name: Generate additional packages from Dockerfile
         if: matrix.kind == 'container'
         run: ./scripts/generate_additional_packages.sh > container_additional_packages.txt
