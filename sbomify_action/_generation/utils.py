@@ -833,7 +833,14 @@ def resolve_npm_lockfile(directory: Path) -> Path | None:
     bun is unavailable, or when resolution fails -- all of which leave the
     previous behaviour untouched.
     """
-    if any((directory / name).is_file() for name in _js_lock_files()):
+    # lstat, not stat. A dangling symlink is not a file, so it read as "no
+    # lock": bun 1.3.14 then replaced the committed link with its own lock,
+    # and the cleanup deleted that, leaving the checkout without the entry it
+    # started with.
+    if linked := [name for name in _js_lock_files() if (directory / name).is_symlink()]:
+        logger.warning(f"{linked[0]} is a symlink; not resolving package.json over it")
+        return None
+    if any((directory / name).exists() for name in _js_lock_files()):
         return None
 
     # Resolving reaches the registry, so it honours the same opt-out as
@@ -857,7 +864,7 @@ def resolve_npm_lockfile(directory: Path) -> Path | None:
     # missing one is a committed file removed from a checkout. Ownership is
     # recorded instead of inferred.
     candidates = (directory / "bun.lock", directory / "bun.lockb")
-    pre_existing = {c for c in candidates if c.is_file()}
+    pre_existing = {c for c in candidates if c.is_symlink() or c.exists()}
 
     try:
         subprocess.run(
@@ -879,9 +886,18 @@ def resolve_npm_lockfile(directory: Path) -> Path | None:
 
     # Whichever bun actually wrote, and only if it was not there before.
     for candidate in candidates:
-        if candidate.is_file() and candidate not in pre_existing:
-            logger.info(f"Resolved package.json into a temporary {candidate.name} for this run only")
-            return candidate
+        if candidate in pre_existing or not (candidate.is_symlink() or candidate.exists()):
+            continue
+        # The caller deletes it, so it has to be a regular file in the project.
+        if (
+            candidate.is_symlink()
+            or not candidate.is_file()
+            or not candidate.resolve().is_relative_to(directory.resolve())
+        ):
+            logger.warning(f"bun left a {candidate.name} that is not a regular file inside the project; not using it")
+            return None
+        logger.info(f"Resolved package.json into a temporary {candidate.name} for this run only")
+        return candidate
     return None
 
 
