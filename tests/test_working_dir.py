@@ -312,6 +312,14 @@ class TestInputsResolveInsideWorkingDir:
         assert "lock_file" not in seen, f"built from {seen.get('lock_file')}"
         assert result.exit_code != 0
 
+    def test_a_missing_source_dir_is_not_read_from_the_repository_root(self, monorepo):
+        (monorepo / "dist").mkdir()
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", SOURCE_DIR="dist")
+
+        assert "source_dir" not in seen, f"scanned {seen.get('source_dir')}"
+        assert "'../../dist'" in str(result.exception)
+
     def test_the_confinement_ends_with_the_run(self, monorepo):
         """It is process state, so it must not outlive the invocation that set it."""
         from sbomify_action._runtime import inside_working_dir

@@ -1426,9 +1426,9 @@ def path_expansion(path: str) -> str:
 
 
 def _outside_working_dir_hint(found: list[Path]) -> str:
-    """Explain a file a lookup found at a checkout root and refused.
+    """Explain a file or directory a lookup found at a checkout root and refused.
 
-    Without WORKING_DIR any file found there is used, so ``found`` holds
+    Without WORKING_DIR anything found there is used, so ``found`` holds
     something only when WORKING_DIR refused it -- and by then the CLI has
     changed into that directory, which is why ``Path.cwd()`` stands for it.
     """
@@ -1438,7 +1438,7 @@ def _outside_working_dir_hint(found: list[Path]) -> str:
     other = found[0]
     return (
         f". '{other}' exists, but it is outside WORKING_DIR ('{here}') and was not used: "
-        "in a monorepo the file at the repository root describes the whole repository, not this "
+        "in a monorepo what sits at the repository root describes the whole repository, not this "
         "package, and an SBOM built from it would list dependencies this component does not have. "
         f"To use it anyway, give its path relative to WORKING_DIR ('{os.path.relpath(other.resolve(), here)}') "
         "or as an absolute path."
@@ -1619,7 +1619,7 @@ def directory_expansion(path: str) -> str:
     workspace_paths = tuple(workspace / path for workspace in workspace_candidates())
 
     logger.debug(f"Searching for directory '{path}'...")
-    for candidate in (Path(path), relative_path, *workspace_paths):
+    for candidate in (Path(path), relative_path, *filter(inside_working_dir, workspace_paths)):
         if candidate.is_dir():
             logger.info(f"Using source directory '{candidate}'.")
             return str(candidate if candidate.is_absolute() else current_dir / candidate)
@@ -1627,6 +1627,7 @@ def directory_expansion(path: str) -> str:
     raise InputPathNotFoundError(
         f"Specified source directory '{path}' not found. "
         f"Searched in: {_format_search_locations(Path(path), relative_path, *workspace_paths)}"
+        + _outside_working_dir_hint([p for p in workspace_paths if p.is_dir()])
     )
 
 
