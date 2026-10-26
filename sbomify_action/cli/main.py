@@ -19,7 +19,14 @@ import sentry_sdk
 
 # Add cyclonedx imports for proper SBOM handling
 from .. import format_display_name
-from .._runtime import CIPlatform, get_platform, legacy_workspaces, workspace_candidates
+from .._runtime import (
+    CIPlatform,
+    get_platform,
+    inside_working_dir,
+    legacy_workspaces,
+    set_working_dir,
+    workspace_candidates,
+)
 from .._upload import VALID_BOM_TYPES, VALID_DESTINATIONS
 from ..additional_packages import inject_additional_packages
 from ..augmentation import augment_sbom_from_file
@@ -1336,10 +1343,10 @@ def _format_search_locations(*candidates: Path) -> str:
 
 
 def _first_existing(path: str | Path) -> Path | None:
-    """Return the first workspace candidate that holds ``path`` as a file."""
+    """Return the first workspace candidate that holds ``path`` as a file inside WORKING_DIR."""
     for workspace in workspace_candidates():
         candidate = workspace / path
-        if candidate.is_file():
+        if candidate.is_file() and inside_working_dir(candidate):
             return candidate
     return None
 
@@ -4073,6 +4080,10 @@ def cli(
             if not cwd.is_relative_to(workspace):
                 logger.error(f"Working directory '{cwd}' escaped workspace '{workspace}' after chdir. Aborting.")
                 ctx.exit(1)
+        # Input lookups keep only what is inside it from here on; see
+        # inside_working_dir. Cleared with the context so it ends with the run.
+        set_working_dir(resolved)
+        ctx.call_on_close(lambda: set_working_dir(None))
 
     # If a subcommand was invoked, don't run the default pipeline
     if ctx.invoked_subcommand is not None:

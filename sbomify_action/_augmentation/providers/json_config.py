@@ -44,7 +44,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from sbomify_action._runtime import workspace_candidates
+from sbomify_action._runtime import inside_working_dir, workspace_candidates
 from sbomify_action.logging_config import logger
 
 from ..metadata import AugmentationMetadata
@@ -158,7 +158,7 @@ class JsonConfigProvider:
             if workspace == cwd or not workspace.is_dir():
                 continue
             path = workspace / DEFAULT_CONFIG_FILE
-            if path.is_file():
+            if path.is_file() and inside_working_dir(path):
                 return path
 
         return None

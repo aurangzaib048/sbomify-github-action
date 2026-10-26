@@ -2,13 +2,15 @@
 
 import os
 import tempfile
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 
 import click
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
+from sbomify_action._augmentation.providers.json_config import JsonConfigProvider
 from sbomify_action.cli.main import cli, resolve_working_dir
 
 
@@ -170,3 +172,112 @@ class TestPlatformIsResolvedOnce:
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "", "GITHUB_WORKSPACE": ""}, clear=False):
                 _m.resolve_working_dir(str(workspace / "sub"))
             assert spy.call_count == 1, f"platform resolved {spy.call_count} times, expected once"
+
+
+_main = import_module("sbomify_action.cli.main")
+
+
+@pytest.fixture
+def monorepo(tmp_path, monkeypatch):
+    """A workspace whose root holds a lock file and a config of its own."""
+    root = tmp_path.resolve() / "repo"
+    (root / "packages" / "api").mkdir(parents=True)
+    (root / "uv.lock").write_text("version = 1\n")
+    (root / "sbomify.json").write_text('{"supplier": {"name": "The whole repository"}}')
+    monkeypatch.chdir(root)
+    return root
+
+
+def _run_action(root: Path, **env: str | None) -> tuple[Result, dict]:
+    """Run the CLI the way the GitHub Action does, capturing what the pipeline is handed."""
+    seen: dict = {}
+
+    def pipeline(config):
+        seen["lock_file"] = config.lock_file
+        seen["source_dir"] = config.source_dir
+        seen["sbomify_json"] = JsonConfigProvider()._find_config_file()
+
+    with (
+        patch.object(_main, "setup_dependencies"),
+        patch.object(_main, "run_pipeline", side_effect=pipeline),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [],
+            env={
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_WORKSPACE": str(root),
+                "WORKING_DIR": None,
+                "UPLOAD": "false",
+                **env,
+            },
+        )
+    return result, seen
+
+
+class TestInputsResolveInsideWorkingDir:
+    """With WORKING_DIR set, a relative input is looked up only inside it.
+
+    Lookups also try the checkout roots, because a runtime can mount the
+    repository away from where the command runs. Under WORKING_DIR those roots
+    are the repository around the chosen package, and in a uv, npm or Cargo
+    workspace the lock file there lists every package's dependencies: an SBOM
+    built from it describes the whole repository and passes every check.
+    """
+
+    def test_a_missing_lock_file_is_not_read_from_the_repository_root(self, monorepo):
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert "lock_file" not in seen, f"built from {seen.get('lock_file')}"
+        assert result.exit_code != 0
+
+    def test_a_missing_sbomify_json_is_not_read_from_the_repository_root(self, monorepo):
+        (monorepo / "packages" / "api" / "uv.lock").write_text("version = 1\n")
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert result.exit_code == 0, result.output
+        assert seen["sbomify_json"] is None
+
+    def test_the_working_dirs_own_files_are_used(self, monorepo):
+        package = monorepo / "packages" / "api"
+        (package / "uv.lock").write_text("version = 1\n")
+        (package / "sbomify.json").write_text("{}")
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert result.exit_code == 0, result.output
+        assert Path(seen["lock_file"]) == package / "uv.lock"
+        assert seen["sbomify_json"] == package / "sbomify.json"
+
+    def test_a_root_relative_path_that_lands_inside_still_resolves(self, monorepo):
+        """A LOCK_FILE written against the repository root, from before
+        working-dir was set, names the package's own file and keeps working."""
+        package = monorepo / "packages" / "api"
+        (package / "uv.lock").write_text("version = 1\n")
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="packages/api/uv.lock")
+
+        assert result.exit_code == 0, result.output
+        assert Path(seen["lock_file"]) == package / "uv.lock"
+
+    def test_without_working_dir_the_checkout_root_is_still_searched(self, monorepo, tmp_path, monkeypatch):
+        """The case the root lookup exists for: the command runs somewhere other
+        than where the repository is mounted."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        result, seen = _run_action(monorepo, LOCK_FILE="uv.lock")
+
+        assert result.exit_code == 0, result.output
+        assert Path(seen["lock_file"]) == monorepo / "uv.lock"
+        assert seen["sbomify_json"] == monorepo / "sbomify.json"
+
+    def test_the_confinement_ends_with_the_run(self, monorepo):
+        """It is process state, so it must not outlive the invocation that set it."""
+        from sbomify_action._runtime import inside_working_dir
+
+        _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert inside_working_dir(monorepo / "uv.lock")
