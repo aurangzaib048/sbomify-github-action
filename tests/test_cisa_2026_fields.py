@@ -17,7 +17,7 @@ from sbomify_action.cli.main import build_config, run_pipeline
 from sbomify_action.generation import GenerationResult
 
 GENERATOR = {"type": "application", "group": "CycloneDX", "name": "cyclonedx-py", "version": "7.3.0"}
-SBOMIFY_ACTION = {"type": "application", "group": "sbomify", "name": "sbomify-action", "version": __version__}
+SBOMIFY_ACTION = {"type": "application", "group": "sbomify", "name": "sbomify action", "version": __version__}
 
 GITHUB_ENV = {
     "GITHUB_ACTIONS": "true",
@@ -182,7 +182,7 @@ class TestToolNameAndVersion:
         out = _run(tmp_path, monkeypatch, _cdx("1.4", tools=[cargo]), "lock_file", spec_version="1.4")
         assert out["metadata"]["tools"] == [
             cargo,
-            {"vendor": "sbomify", "name": "sbomify-action", "version": __version__},
+            {"vendor": "sbomify", "name": "sbomify action", "version": __version__},
         ]
 
     def test_a_document_sbomify_action_wrote_itself_names_it(self, tmp_path, monkeypatch):
@@ -196,9 +196,15 @@ class TestToolNameAndVersion:
         out = _run(tmp_path, monkeypatch, _cdx(tools=listed), "lock_file")
         assert out["metadata"]["tools"] == listed
 
+    def test_the_hyphenated_spelling_counts_as_listed(self, tmp_path, monkeypatch):
+        """The SPDX 3 writer spells it "sbomify-action"; either spelling is one tool."""
+        listed = {"components": [{"type": "application", "name": "sbomify-action", "version": __version__}]}
+        out = _run(tmp_path, monkeypatch, _cdx(tools=listed), "lock_file")
+        assert out["metadata"]["tools"] == listed
+
     def test_spdx_2_creators_list_the_generator_and_sbomify_action(self, tmp_path, monkeypatch):
         out = _run(tmp_path, monkeypatch, _spdx(), "lock_file")
-        assert out["creationInfo"]["creators"] == ["Tool: syft-1.42.4", f"Tool: sbomify-action-{__version__}"]
+        assert out["creationInfo"]["creators"] == ["Tool: syft-1.42.4", f"Tool: sbomify action-{__version__}"]
 
     def test_a_supplied_sbom_keeps_its_own_tools(self, tmp_path, monkeypatch):
         out = _run(tmp_path, monkeypatch, _cdx(tools={"components": [GENERATOR]}), "sbom_file")
@@ -244,17 +250,70 @@ class TestSupplierFromPublisher:
         out = {c["bom-ref"]: c for c in self._enrich(tmp_path, [os_component, library])}
         assert out["os"]["publisher"] == "Alpine Linux"
         assert out["os"]["supplier"] == {"name": "Alpine Linux"}
+        assert {"name": "sbomify:enrichment:source", "value": "purl"} in out["os"]["properties"]
 
-    def test_a_publisher_with_no_supplier_becomes_the_supplier(self, tmp_path):
+    def test_a_publisher_the_generator_wrote_is_not_promoted(self, tmp_path):
+        """Only values enrichment derived become the supplier. A generator's
+        publisher -- syft writes a deb maintainer's ``Name <email>`` there -- is
+        not ours to reinterpret."""
         component = {
             "type": "library",
             "name": "x",
             "version": "1",
             "purl": "pkg:generic/x@1",
             "bom-ref": "x",
-            "publisher": "Jane Maintainer",
+            "publisher": "Jane Maintainer <jane@example.com>",
         }
-        assert self._enrich(tmp_path, [component])[0]["supplier"] == {"name": "Jane Maintainer"}
+        assert "supplier" not in self._enrich(tmp_path, [component])[0]
+
+    def test_a_maintainer_enrichment_found_is_the_supplier_when_no_registry_named_one(self):
+        from cyclonedx.model.component import Component, ComponentType
+
+        from sbomify_action._enrichment.metadata import NormalizedMetadata
+        from sbomify_action.enrichment import _apply_metadata_to_cyclonedx_component
+
+        component = Component(name="x", version="1", type=ComponentType.LIBRARY)
+        added = _apply_metadata_to_cyclonedx_component(
+            component, NormalizedMetadata(maintainer_name="Jane Maintainer"), source="pypi"
+        )
+        assert component.publisher == "Jane Maintainer"
+        assert component.supplier is not None and component.supplier.name == "Jane Maintainer"
+        assert "supplier" in added
+
+    def test_a_registry_supplier_wins_over_the_maintainer(self):
+        from cyclonedx.model.component import Component, ComponentType
+
+        from sbomify_action._enrichment.metadata import NormalizedMetadata
+        from sbomify_action.enrichment import _apply_metadata_to_cyclonedx_component
+
+        component = Component(name="x", version="1", type=ComponentType.LIBRARY)
+        metadata = NormalizedMetadata(maintainer_name="Jane Maintainer", supplier="Python Package Index")
+        _apply_metadata_to_cyclonedx_component(component, metadata, source="pypi")
+        assert component.supplier is not None and component.supplier.name == "Python Package Index"
+
+    def test_the_project_itself_as_a_dependency_gets_the_root_supplier(self, tmp_path):
+        from unittest.mock import Mock
+
+        from sbomify_action.enrichment import clear_cache, enrich_sbom
+
+        document = _cdx()
+        document["metadata"]["component"] = {
+            "type": "application",
+            "name": "app",
+            "bom-ref": "root",
+            "supplier": {"name": "Acme Corp"},
+        }
+        document["components"] = [
+            {"type": "library", "name": "app", "version": "1", "purl": "pkg:generic/app@1", "bom-ref": "self"}
+        ]
+        (tmp_path / "in.json").write_text(json.dumps(document), encoding="utf-8")
+        clear_cache()
+        with patch("requests.Session.get", return_value=Mock(status_code=404)):
+            enrich_sbom(str(tmp_path / "in.json"), str(tmp_path / "out.json"), validate=False)
+        (component,) = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["components"]
+        assert component["publisher"] == "Acme Corp"
+        assert component["supplier"]["name"] == "Acme Corp"
+        assert {"name": "sbomify:enrichment:source", "value": "root-component"} in component["properties"]
 
     def test_an_existing_supplier_is_never_overwritten(self, tmp_path):
         component = {
@@ -291,6 +350,37 @@ class TestNoVulnerabilityData:
         assert out["components"] == document["components"]
         assert "Removed 2 vulnerabilities" in caplog.text
         assert "CVE-2026-0001, GHSA-xxxx-yyyy-zzzz" in caplog.text
+
+    def test_keep_vulnerabilities_leaves_them_in(self, tmp_path, monkeypatch):
+        """BSI is one profile; CISA 2026 and NTIA allow embedded vulnerabilities."""
+        document = _cdx()
+        document["vulnerabilities"] = VULNERABILITIES
+        out = _run(tmp_path, monkeypatch, document, "sbom_file", keep_vulnerabilities=True)
+        assert out["vulnerabilities"] == VULNERABILITIES
+
+    def test_references_to_removed_vulnerabilities_go_with_them(self, tmp_path, monkeypatch):
+        """compositions and annotations may point at a vulnerability's bom-ref;
+        left behind, they point at nothing."""
+        document = _cdx()
+        document["vulnerabilities"] = [{**v, "bom-ref": f"v{i}"} for i, v in enumerate(VULNERABILITIES)]
+        document["compositions"] = [
+            {"aggregate": "complete", "vulnerabilities": ["v0", "v1"]},
+            {"aggregate": "complete", "assemblies": ["pkg:cargo/serde@1.0.0"], "vulnerabilities": ["v0"]},
+        ]
+        annotation = {"annotator": {"organization": {"name": "Acme"}}, "timestamp": "2026-10-01T00:00:00Z"}
+        document["annotations"] = [
+            {**annotation, "bom-ref": "a0", "subjects": ["v0"], "text": "about a vulnerability"},
+            {**annotation, "bom-ref": "a1", "subjects": ["v1", "pkg:cargo/serde@1.0.0"], "text": "about both"},
+        ]
+        out = _run(tmp_path, monkeypatch, document, "sbom_file")
+        assert out["compositions"] == [{"aggregate": "complete", "assemblies": ["pkg:cargo/serde@1.0.0"]}]
+        assert [(a["bom-ref"], a["subjects"]) for a in out["annotations"]] == [("a1", ["pkg:cargo/serde@1.0.0"])]
+
+    def test_one_vulnerability_is_singular(self, tmp_path, monkeypatch, caplog):
+        document = _cdx()
+        document["vulnerabilities"] = VULNERABILITIES[:1]
+        _run(tmp_path, monkeypatch, document, "sbom_file")
+        assert "Removed 1 vulnerability " in caplog.text
 
     def test_a_vex_sent_as_an_sbom_is_not_emptied(self, tmp_path, monkeypatch, caplog):
         """Vulnerabilities and no inventory is a VEX with the wrong BOM_TYPE.
