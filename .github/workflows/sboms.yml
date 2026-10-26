@@ -49,6 +49,7 @@ jobs:
       && (github.event.workflow_run.head_branch == 'master'
           || startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       id-token: write   # required to mint the GitHub OIDC JWT
       contents: read

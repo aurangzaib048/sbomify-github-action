@@ -15,6 +15,7 @@ jobs:
   build-and-publish-testpypi:
     name: Build and publish to TestPyPI
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     environment:
       name: testpypi
@@ -79,6 +80,7 @@ jobs:
   build-and-publish-pypi:
     name: Build and publish to PyPI
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'release'
     environment:
       name: pypi

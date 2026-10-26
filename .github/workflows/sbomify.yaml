@@ -21,6 +21,7 @@ jobs:
   sanity-checks:
     name: Sanity Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -60,6 +61,7 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -109,6 +111,7 @@ jobs:
   container-tests:
     name: Container Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -135,6 +138,7 @@ jobs:
   license-db-integration-test:
     name: License DB Integration Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -420,6 +424,7 @@ jobs:
   cle-integration-test:
     name: CLE Lifecycle Integration Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -541,6 +546,7 @@ jobs:
   augmentation-integration-test:
     name: Augmentation Integration Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -1054,6 +1060,7 @@ jobs:
   docker-meta:
     name: Docker Build Metadata
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -1103,6 +1110,7 @@ jobs:
   build-images:
     name: Build Docker Image (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
     needs:
       - sanity-checks
       - integration-tests
@@ -1187,6 +1195,7 @@ jobs:
   push-images:
     name: Push Docker Images
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       - docker-meta
       - build-images
