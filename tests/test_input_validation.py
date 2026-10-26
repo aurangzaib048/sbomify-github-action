@@ -5,10 +5,15 @@ Found by an audit of the action:
 - A file whose top level is not a JSON object (``[]``, ``42``, ``null``)
   reached code that called ``.get()`` on it and crashed with
   ``AttributeError``, which telemetry then reported as a defect in the action.
+- A CycloneDX ``SBOM_FILE`` that fails its schema (``"components": "oops"``)
+  passed Step 1 and was written out unchanged with exit 0.
 """
+
+import json
 
 import pytest
 
+from sbomify_action.console import reset_audit_trail
 from sbomify_action.exceptions import FileProcessingError, SBOMValidationError
 
 NOT_OBJECTS = ["[]", "42", "null", '"sbom"']
@@ -103,3 +108,88 @@ def test_yocto_discovery_skips_a_non_object_instead_of_crashing(tmp_path):
 
     with pytest.raises(FileProcessingError, match="No package SBOMs"):
         discover_packages(str(tmp_path))
+
+
+def _write(tmp_path, document):
+    path = tmp_path / "sbom.json"
+    path.write_text(json.dumps(document))
+    return str(path)
+
+
+def test_a_schema_invalid_cyclonedx_sbom_file_is_refused(tmp_path):
+    from sbomify_action.cli.main import validate_sbom
+
+    path = _write(tmp_path, {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": "oops"})
+
+    with pytest.raises(SBOMValidationError, match="components"):
+        validate_sbom(path)
+
+
+def test_a_cyclonedx_sbom_file_without_a_spec_version_is_refused(tmp_path):
+    from sbomify_action.cli.main import validate_sbom
+
+    path = _write(tmp_path, {"bomFormat": "CycloneDX", "components": []})
+
+    with pytest.raises(SBOMValidationError, match="specVersion"):
+        validate_sbom(path)
+
+
+def test_licence_shapes_the_pipeline_repairs_are_not_refused(tmp_path):
+    """Trivy writes non-SPDX ids into license.id and cdxgen a bare string into
+    license.text. Both fail the schema, and load_cyclonedx_bom repairs both,
+    so refusing them here would break inputs the pipeline already handles.
+
+    The trial repair must not reach the audit trail: the real one, later,
+    records it, and recording it twice would misstate what was changed.
+    """
+    from sbomify_action.cli.main import validate_sbom
+
+    path = _write(
+        tmp_path,
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [
+                {"type": "library", "name": "a", "licenses": [{"license": {"id": "GPLv2+"}}]},
+                {"type": "library", "name": "b", "licenses": [{"license": {"name": "x", "text": "Copyright"}}]},
+            ],
+        },
+    )
+    trail = reset_audit_trail()
+
+    assert validate_sbom(path) == "cyclonedx"
+    assert trail.entries == []
+
+
+def _sbom_file_config(tmp_path, monkeypatch, document, **options):
+    from sbomify_action.cli.main import build_config
+
+    monkeypatch.chdir(tmp_path)
+    return build_config(sbom_file=_write(tmp_path, document), upload=False, output_file="out.json", **options)
+
+
+def test_the_pipeline_stops_at_step_1_on_a_schema_invalid_sbom_file(tmp_path, monkeypatch):
+    from sbomify_action.cli.main import run_pipeline
+
+    config = _sbom_file_config(
+        tmp_path, monkeypatch, {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": "oops"}
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline(config)
+    assert exc.value.code == 1
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_an_sbom_file_with_no_components_still_passes(tmp_path, monkeypatch):
+    """Only a lock file that yields nothing is suspect. A supplied SBOM that
+    lists no components may be exactly right."""
+    from sbomify_action.cli.main import run_pipeline
+
+    config = _sbom_file_config(
+        tmp_path, monkeypatch, {"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}
+    )
+
+    run_pipeline(config)
+
+    assert json.loads((tmp_path / "out.json").read_text())["components"] == []

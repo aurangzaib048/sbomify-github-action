@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import os
@@ -72,11 +73,13 @@ from ..serialization import (
     _fix_purl_encoding_bugs_in_json,
     load_cyclonedx_bom,
     load_sbom_json,
+    sanitize_cyclonedx_licenses,
     sanitize_spdx_licenses,
     serialize_cyclonedx_bom,
 )
 from ..spdx3 import is_spdx3
 from ..upload import upload_document, upload_sbom
+from ..validation import validate_sbom_data
 
 
 # Import version for tool metadata with multiple fallback mechanisms
@@ -1679,12 +1682,41 @@ def validate_sbom(file_path: str) -> str:
     # Detect artifact type (only log once during initial validation)
     if data.get("bomFormat") == "CycloneDX":
         logger.info("Detected CycloneDX SBOM.")
+        _check_cyclonedx_schema(data)
         return "cyclonedx"
     elif data.get("spdxVersion") is not None or is_spdx3(data):
         logger.info("Detected SPDX SBOM.")
         return "spdx"
     else:
         raise SBOMValidationError("Neither CycloneDX nor SPDX format found in JSON file")
+
+
+def _check_cyclonedx_schema(data: dict[str, Any]) -> None:
+    """Refuse a supplied CycloneDX document whose structure is broken.
+
+    Nothing checked SBOM_FILE against its schema: ``"components": "oops"``
+    passed Step 1 and was written out unchanged with exit 0, so a document no
+    consumer can read was published as if it were fine.
+
+    The licence shapes ``load_cyclonedx_bom`` repairs -- Trivy's non-SPDX ids
+    in ``license.id``, cdxgen's bare string in ``license.text`` -- fail the
+    schema too, and refusing them would break inputs the pipeline already
+    handles. So they are repaired first, as generation does before it
+    validates. This trial repair runs in an empty context because repairs are
+    written to the audit trail, and the real one, when the document is
+    loaded, records them.
+    """
+    spec_version = data.get("specVersion")
+    if not spec_version:
+        raise SBOMValidationError("CycloneDX SBOM has no specVersion, which the CycloneDX schema requires")
+    try:
+        contextvars.Context().run(sanitize_cyclonedx_licenses, data)
+    except Exception:  # noqa: BLE001 - best effort, as in generation; the schema below is the judge
+        pass
+    result = validate_sbom_data(data, "cyclonedx", str(spec_version))
+    if result.valid is False:
+        where = f" at '{result.error_path}'" if result.error_path else ""
+        raise SBOMValidationError(f"Not a valid CycloneDX {spec_version} document{where}: {result.error_message}")
 
 
 def _detect_external_vex_format(file_path: str) -> Optional[str]:
