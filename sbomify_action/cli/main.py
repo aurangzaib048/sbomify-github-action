@@ -245,6 +245,7 @@ class Config:
     augment: bool = False
     enrich: bool = False
     override_sbom_metadata: bool = False
+    allow_empty_sbom: bool = False
     override_name: bool = False
     component_version: Optional[str] = None
     component_version_source: Optional[str] = None
@@ -841,6 +842,7 @@ def build_config(
     augment: bool = False,
     enrich: bool = False,
     override_sbom_metadata: bool = False,
+    allow_empty_sbom: bool = False,
     component_version: Optional[str] = None,
     component_name: Optional[str] = None,
     component_purl: Optional[str] = None,
@@ -1011,6 +1013,7 @@ def build_config(
         augment=augment,
         enrich=enrich,
         override_sbom_metadata=override_sbom_metadata,
+        allow_empty_sbom=allow_empty_sbom,
         override_name=final_override_name,
         component_version=final_component_version,
         component_version_source=version_source,
@@ -1071,6 +1074,7 @@ def load_config() -> Config:
         override_sbom_metadata=evaluate_boolean(
             os.getenv("OVERRIDE_SBOM_METADATA", "False"), source="OVERRIDE_SBOM_METADATA"
         ),
+        allow_empty_sbom=evaluate_boolean(os.getenv("ALLOW_EMPTY_SBOM", "False"), source="ALLOW_EMPTY_SBOM"),
         component_version=os.getenv("COMPONENT_VERSION"),
         component_name=os.getenv("COMPONENT_NAME"),
         component_purl=os.getenv("COMPONENT_PURL"),
@@ -2429,6 +2433,7 @@ def run_pipeline(config: Config) -> None:
                     output_file=STEP_1_FILE,
                     output_format=config.sbom_format,
                     spec_version=config.spec_version,
+                    allow_empty_sbom=config.allow_empty_sbom,
                 )
                 if not result.success:
                     raise SBOMGenerationError(result.error_message or "SBOM generation failed")
@@ -3922,6 +3927,18 @@ def _parse_upload_destinations_callback(
     help="Override existing SBOM metadata with values from augmentation. [env: OVERRIDE_SBOM_METADATA]",
 )
 @click.option(
+    "--allow-empty-sbom/--no-allow-empty-sbom",
+    default=False,
+    show_default=True,
+    callback=_make_bool_envvar_callback("ALLOW_EMPTY_SBOM", False),
+    is_eager=True,
+    help=(
+        "Accept an SBOM with no components from a lock file that is not empty. Off by default: an empty "
+        "SBOM reads as 'no dependencies' to anyone checking NTIA minimum elements or EU CRA compliance. "
+        "[env: ALLOW_EMPTY_SBOM]"
+    ),
+)
+@click.option(
     "--component-version",
     envvar="COMPONENT_VERSION",
     help="Override the component version in the SBOM.",
@@ -4045,6 +4062,7 @@ def cli(
     augment: bool,
     enrich: bool,
     override_sbom_metadata: bool,
+    allow_empty_sbom: bool,
     component_version: Optional[str],
     component_name: Optional[str],
     component_purl: Optional[str],
@@ -4191,6 +4209,7 @@ def cli(
         augment=augment,
         enrich=enrich,
         override_sbom_metadata=override_sbom_metadata,
+        allow_empty_sbom=allow_empty_sbom,
         component_version=component_version,
         component_name=component_name,
         component_purl=component_purl,
