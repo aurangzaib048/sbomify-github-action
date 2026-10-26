@@ -34,6 +34,8 @@ jobs:
             component_id: your-worker-component-id
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: sbomify/sbomify-action@57ca9ba7de2232b073a3799bc8c0dc002e6777b9 # v26.10.2
         with:
