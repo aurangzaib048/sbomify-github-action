@@ -255,7 +255,11 @@ class HashEnricher:
 
                 # Record to audit trail
                 audit = get_audit_trail()
-                component_id = package.get("SPDXID") or f"{name}@{version}"
+                # By PURL first, as registry enrichment records it, so a package
+                # that gains a hash here and metadata later is one component.
+                refs = package.get("externalRefs", [])
+                purl = next((r.get("referenceLocator") for r in refs if r.get("referenceType") == "purl"), None)
+                component_id = purl or package.get("SPDXID") or f"{name}@{version}"
                 audit.record_hash_added(component_id, pkg_hash.algorithm.value, source="lockfile")
 
             package["checksums"] = checksums

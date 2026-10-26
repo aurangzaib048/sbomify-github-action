@@ -23,6 +23,7 @@ from sbomify_action._hash_enrichment.enricher import (
     create_default_registry,
     enrich_sbom_with_hashes,
 )
+from sbomify_action.console import reset_audit_trail
 
 
 def _sri(payload: bytes) -> str:
@@ -149,6 +150,24 @@ class TestEnrichSpdx:
         (checksum,) = doc["packages"][0]["checksums"]
         assert checksum["checksumValue"] == _hex(b"lodash")
         assert checksum["algorithm"] == "SHA512"
+
+    def test_the_audit_trail_names_the_package_by_purl(self, npm_lock: Path):
+        """Registry enrichment records the PURL, so this must too, or a package
+        that gains a hash and then metadata is counted as two enriched components."""
+        doc = self._document()
+        doc["packages"][0]["externalRefs"] = [
+            {
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/lodash@4.17.21",
+            }
+        ]
+        trail = reset_audit_trail()
+
+        HashEnricher().enrich_spdx(doc, npm_lock)
+        trail.record_component_enriched("pkg:npm/lodash@4.17.21", ["description"], "npm")
+
+        assert trail.enrichment_counts() == (1, 2)
 
     def test_a_document_with_no_packages_is_not_an_error(self, npm_lock: Path):
         stats = HashEnricher().enrich_spdx({"spdxVersion": "SPDX-2.3"}, npm_lock)
