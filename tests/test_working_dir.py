@@ -274,6 +274,34 @@ class TestInputsResolveInsideWorkingDir:
         assert Path(seen["lock_file"]) == monorepo / "uv.lock"
         assert seen["sbomify_json"] == monorepo / "sbomify.json"
 
+    def test_the_failure_names_the_root_file_and_how_to_use_it(self, monorepo):
+        result, _ = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        message = str(result.exception)
+        assert str(monorepo / "packages" / "api") in message, "does not name the directory searched"
+        assert f"'{monorepo / 'uv.lock'}'" in message, "does not name the root file it skipped"
+        assert "'../../uv.lock'" in message, "does not say how to point at it relative to WORKING_DIR"
+
+    def test_a_package_without_its_own_lock_file_is_not_substituted(self, monorepo):
+        """The workspace layout: the package has a manifest, the lock file is at
+        the root. The project did not change package manager, so swapping in
+        the manifest would hide that the named file is right there."""
+        (monorepo / "packages" / "api" / "pyproject.toml").write_text("[project]\nname = 'api'\n")
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="uv.lock")
+
+        assert "lock_file" not in seen, f"built from {seen.get('lock_file')}"
+        assert "'../../uv.lock'" in str(result.exception)
+
+    @pytest.mark.parametrize("spelling", ["../../uv.lock", "absolute"])
+    def test_the_root_file_can_be_named_on_purpose(self, monorepo, spelling):
+        lock_file = str(monorepo / "uv.lock") if spelling == "absolute" else spelling
+
+        result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE=lock_file)
+
+        assert result.exit_code == 0, result.output
+        assert Path(seen["lock_file"]).resolve() == monorepo / "uv.lock"
+
     def test_the_confinement_ends_with_the_run(self, monorepo):
         """It is process state, so it must not outlive the invocation that set it."""
         from sbomify_action._runtime import inside_working_dir

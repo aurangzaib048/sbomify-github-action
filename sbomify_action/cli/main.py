@@ -1421,7 +1421,28 @@ def path_expansion(path: str) -> str:
         raise InputPathNotFoundError(
             f"Specified input file '{path}' not found. "
             f"Searched in: {_format_search_locations(Path(path), relative_path, *workspace_paths)}"
+            + _outside_working_dir_hint([p for p in workspace_paths if p.is_file()])
         )
+
+
+def _outside_working_dir_hint(found: list[Path]) -> str:
+    """Explain a file a lookup found at a checkout root and refused.
+
+    Without WORKING_DIR any file found there is used, so ``found`` holds
+    something only when WORKING_DIR refused it -- and by then the CLI has
+    changed into that directory, which is why ``Path.cwd()`` stands for it.
+    """
+    if not found:
+        return ""
+    here = Path.cwd()
+    other = found[0]
+    return (
+        f". '{other}' exists, but it is outside WORKING_DIR ('{here}') and was not used: "
+        "in a monorepo the file at the repository root describes the whole repository, not this "
+        "package, and an SBOM built from it would list dependencies this component does not have. "
+        f"To use it anyway, give its path relative to WORKING_DIR ('{os.path.relpath(other.resolve(), here)}') "
+        "or as an absolute path."
+    )
 
 
 def _expand_lock_file_or_substitute(path: str) -> str:
@@ -1451,6 +1472,12 @@ def _expand_lock_file_or_substitute(path: str) -> str:
         return path_expansion(path)
     except FileProcessingError as missing:
         original = missing
+
+    # The named file is there, only outside WORKING_DIR. The project did not
+    # change package manager, so there is nothing to substitute, and the error
+    # already says how to use that file on purpose.
+    if any((root / path).is_file() for root in workspace_candidates()):
+        raise original
 
     named = Path(path)
     ecosystem = get_lock_file_ecosystem(named.name)
