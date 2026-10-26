@@ -552,6 +552,31 @@ class TestCdxgenFsGenerator(unittest.TestCase):
         cmd = mock_run.call_args[0][0]
         self.assertIn("--fail-on-error", cmd)
 
+    @patch("sbomify_action._generation.generators.cdxgen.resolve_npm_lockfile", return_value=None)
+    @patch("sbomify_action._generation.generators.cdxgen.ensure_php_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.ensure_dotnet_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.ensure_go_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.ensure_java_maven_installed")
+    @patch("sbomify_action._generation.generators.cdxgen.run_command")
+    @patch("pathlib.Path.exists")
+    def test_generate_never_installs_the_projects_dependencies(self, mock_exists, mock_run, *_):
+        """--no-install-deps for every input cdxgen claims.
+
+        Without it cdxgen installs dependencies when it finds no lock file, and
+        installing runs code from the scanned repository in CI: pip builds a
+        pyproject.toml or setup.py, composer runs the root package's scripts.
+        """
+        from sbomify_action._generation.utils import CDXGEN_LOCK_FILES
+
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_exists.return_value = True
+
+        for name in [*CDXGEN_LOCK_FILES, "widget.csproj"]:
+            with self.subTest(name):
+                self.generator.generate(GenerationInput(lock_file=f"/path/to/{name}", output_file="sbom.json"))
+                cmd = mock_run.call_args[0][0]
+                self.assertIn("--no-install-deps", cmd)
+
     @patch("sbomify_action._generation.generators.cdxgen.run_command")
     @patch("pathlib.Path.exists")
     def test_generate_changes_to_lock_file_directory(self, mock_exists, mock_run):
@@ -704,6 +729,21 @@ class TestCdxgenImageGenerator(unittest.TestCase):
         cmd = mock_run.call_args[0][0]
         self.assertIn("--required-only", cmd)
         self.assertIn("--fail-on-error", cmd)
+
+    @patch("sbomify_action._generation.generators.cdxgen.run_command")
+    @patch("pathlib.Path.exists")
+    def test_generate_never_installs_dependencies(self, mock_exists, mock_run):
+        """--no-install-deps for images too, rather than relying on cdxgen's default."""
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_exists.return_value = True
+
+        gen_input = GenerationInput(
+            docker_image="alpine:3.18", output_file="/output/sbom.json", output_format="cyclonedx"
+        )
+        self.generator.generate(gen_input)
+
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--no-install-deps", cmd)
 
 
 @patch("sbomify_action._generation.generators.syft._SYFT_AVAILABLE", True)

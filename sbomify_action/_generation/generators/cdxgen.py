@@ -263,6 +263,13 @@ class CdxgenFsGenerator:
         # Fail on error to ensure we catch issues early
         cmd.append("--fail-on-error")
 
+        # cdxgen installs a project's dependencies by default when it finds no
+        # lock file, which runs code from the repository being scanned: pip
+        # builds a pyproject.toml or setup.py, composer runs the root
+        # package's scripts, bundler evaluates the Gemfile, dotnet restore
+        # evaluates MSBuild. An SBOM step must read the project, not run it.
+        cmd.append("--no-install-deps")
+
         # Scan current directory (we'll cd into lock file directory)
         cmd.append(".")
 
@@ -421,6 +428,9 @@ class CdxgenImageGenerator:
             version,
             "--required-only",
             "--fail-on-error",
+            # cdxgen already turns installs off for images; said here so it
+            # does not rest on that default. See CdxgenFsGenerator.
+            "--no-install-deps",
             input.docker_image,
         ]
 
