@@ -109,7 +109,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
-          provenance: false
+          provenance: mode=max
+          sbom: true
           labels: |
             runnumber=${{ github.run_id }}
           build-args: |
@@ -216,10 +217,12 @@ jobs:
           fi
           echo "digest=${GHCR_DIGEST}" >> "$GITHUB_OUTPUT"
 
+      # Each platform's provenance and SBOM sit in the index as an extra
+      # manifest whose platform is unknown/unknown; they are not platforms.
       - name: Image summary
         run: |
           PLATFORMS=$(docker buildx imagetools inspect "${GHCR_REPO}:${IMAGE_TAG}" \
-            --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')
+            --format '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}{{end}}')
           {
             echo '```'
             echo "Primary:   ${GHCR_REPO}:${IMAGE_TAG}"
