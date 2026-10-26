@@ -178,9 +178,10 @@ jobs:
           DOCKER_IMAGE: ${{ matrix.kind == 'container' && format('ghcr.io/sbomify/sbomify-action:{0}', steps.cfg.outputs.docker_tag) || '' }}
           LOCK_FILE: ${{ matrix.lockfile }}
           ADDITIONAL_PACKAGES_FILE: ${{ matrix.kind == 'container' && 'container_additional_packages.txt' || '' }}
-          PRODUCT_RELEASE: '["${{ steps.cfg.outputs.product_release_id }}:${{ steps.cfg.outputs.version }}"]'
           SBOM_FORMAT: ${{ matrix.sbom_format }}
-          UPLOAD: 'true'
+          # Generate only: the check below has to pass before anything is
+          # uploaded or attached to the product release.
+          UPLOAD: 'false'
           AUGMENT: 'true'
           ENRICH: 'true'
           OUTPUT_FILE: ${{ matrix.output_file }}
@@ -196,6 +197,24 @@ jobs:
               [.packages[]?.SPDXID] - [.documentDescribes[]?,
                 (.relationships[]? | select(.relationshipType == "DESCRIBES") | .relatedSpdxElement)]
             else .components end | length > 0' "$SBOM"
+      # Upload the document that was just checked, as it is: no generation,
+      # augmentation or enrichment, so what lands in sbomify is what the
+      # attestation below covers.
+      - uses: sbomify/sbomify-action@master  # zizmor: ignore[unpinned-uses] dogfoods this repo's own master
+        env:
+          API_BASE_URL: ${{ steps.cfg.outputs.api_base_url }}
+          OIDC_AUDIENCE: ${{ steps.cfg.outputs.oidc_audience }}
+          COMPONENT_ID: ${{ steps.cfg.outputs.is_prod == 'true' && matrix.prod_id || matrix.staging_id }}
+          COMPONENT_NAME: ${{ matrix.component_name }}
+          COMPONENT_VERSION: ${{ steps.cfg.outputs.version }}
+          COMPONENT_PURL: ${{ (matrix.kind == 'container' || matrix.is_action) && format('pkg:docker/sbomify/sbomify-action@{0}?repository_url=ghcr.io', steps.cfg.outputs.docker_tag) || '' }}
+          SBOM_FILE: ${{ matrix.output_file }}
+          PRODUCT_RELEASE: '["${{ steps.cfg.outputs.product_release_id }}:${{ steps.cfg.outputs.version }}"]'
+          SBOM_FORMAT: ${{ matrix.sbom_format }}
+          UPLOAD: 'true'
+          AUGMENT: 'false'
+          ENRICH: 'false'
+          OUTPUT_FILE: ${{ matrix.output_file }}
       # ---------------------------------------------------------------------
       # Build-provenance attestation (SLSA v1)
       # ---------------------------------------------------------------------
