@@ -1686,7 +1686,7 @@ def validate_sbom(file_path: str) -> str:
     # Detect artifact type (only log once during initial validation)
     if data.get("bomFormat") == "CycloneDX":
         logger.info("Detected CycloneDX SBOM.")
-        _check_cyclonedx_schema(data)
+        _check_cyclonedx_readable(data)
         return "cyclonedx"
     elif data.get("spdxVersion") is not None or is_spdx3(data):
         logger.info("Detected SPDX SBOM.")
@@ -1695,24 +1695,48 @@ def validate_sbom(file_path: str) -> str:
         raise SBOMValidationError("Neither CycloneDX nor SPDX format found in JSON file")
 
 
+def _check_cyclonedx_readable(data: dict[str, Any]) -> None:
+    """Refuse a supplied CycloneDX document the CycloneDX library cannot read.
+
+    The overrides, augmentation and enrichment all read the document with
+    ``load_cyclonedx_bom``, so one it cannot read -- ``"components": "oops"``,
+    a serialNumber that is not a UUID -- is refused here, before they run.
+
+    A schema failure the library reads past is left to
+    :func:`_check_cyclonedx_schema` on the final document. The library drops
+    a property it does not model and fills in the version 1.4 requires, so
+    such an input ends as a valid SBOM once a step re-serialises it, and
+    refusing it here failed runs that would have published a valid document.
+
+    The trial load runs in an empty context because the licence repairs it
+    makes are written to the audit trail, and the real load records them.
+    """
+    if not data.get("specVersion"):
+        raise SBOMValidationError("CycloneDX SBOM has no specVersion, which the CycloneDX schema requires")
+    try:
+        contextvars.Context().run(load_cyclonedx_bom, data)
+    except Exception as e:  # noqa: BLE001 - a broken shape raises AttributeError or TypeError as often as its own types
+        raise SBOMValidationError(f"The CycloneDX library cannot read this document: {e}") from e
+
+
 def _check_cyclonedx_schema(data: dict[str, Any]) -> None:
-    """Refuse a supplied CycloneDX document whose structure is broken.
+    """Refuse a final CycloneDX document that fails its schema.
 
     Nothing checked SBOM_FILE against its schema: ``"components": "oops"``
     passed Step 1 and was written out unchanged with exit 0, so a document no
-    consumer can read was published as if it were fine.
+    consumer can read was published as if it were fine. This runs on the
+    document about to be written and uploaded, not on the input, so it judges
+    what is published.
 
-    The licence shapes ``load_cyclonedx_bom`` repairs -- Trivy's non-SPDX ids
-    in ``license.id``, cdxgen's bare string in ``license.text`` -- fail the
-    schema too, and refusing them would break inputs the pipeline already
-    handles. So they are repaired first, as generation does before it
-    validates. This trial repair runs in an empty context because repairs are
-    written to the audit trail, and the real one, when the document is
-    loaded, records them.
+    Passed through verbatim, the licence shapes ``load_cyclonedx_bom``
+    repairs -- Trivy's non-SPDX ids in ``license.id``, cdxgen's bare string
+    in ``license.text`` -- reach here unrepaired and fail the schema, and
+    refusing them would break inputs the pipeline already handles. So they
+    are repaired first, as generation does before it validates. This trial
+    repair runs in an empty context because repairs are written to the audit
+    trail, and the file itself is not changed.
     """
     spec_version = data.get("specVersion")
-    if not spec_version:
-        raise SBOMValidationError("CycloneDX SBOM has no specVersion, which the CycloneDX schema requires")
     try:
         contextvars.Context().run(sanitize_cyclonedx_licenses, data)
     except Exception:  # noqa: BLE001 - best effort, as in generation; the schema below is the judge
@@ -2711,6 +2735,13 @@ def run_pipeline(config: Config) -> None:
         if not final_sbom_file:
             raise FileProcessingError("No SBOM file found to finalize")
 
+        # Steps 2 and 3 validate what they write and fail the run on an
+        # invalid document, so checking again after them would only repeat
+        # their work. What they did not see is a supplied document neither of
+        # them re-serialised: one published as supplied, or after an override.
+        if FILE_TYPE == "SBOM" and FORMAT == "cyclonedx" and not (config.augment or config.enrich):
+            _check_cyclonedx_schema(load_sbom_json(final_sbom_file))
+
         # Get the parent directory of the file path
         parent_dir = Path(config.output_file).parent
 
@@ -2730,6 +2761,11 @@ def run_pipeline(config: Config) -> None:
         logger.info(f"Final {artifact_label} saved to: {config.output_file}")
         _log_step_end(4)
 
+    except SBOMValidationError as e:
+        # Before the write, so an invalid document is neither saved nor uploaded.
+        logger.error(f"Step 4 failed: {e}")
+        _log_step_end(4, success=False)
+        sys.exit(1)
     except (FileProcessingError, OSError) as e:
         logger.error(f"Failed to finalize output: {e}")
         _log_step_end(4, success=False)

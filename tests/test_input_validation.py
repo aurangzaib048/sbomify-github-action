@@ -193,6 +193,105 @@ def test_the_pipeline_stops_at_step_1_on_a_schema_invalid_sbom_file(tmp_path, mo
     assert not (tmp_path / "out.json").exists()
 
 
+_COMPONENT = {"type": "library", "name": "a", "version": "1.0"}
+
+#: Inputs the schema refuses and cyclonedx-python-lib normalises: it drops a
+#: property it does not model and fills the top-level version 1.4 requires.
+NORMALISED_BY_THE_LIBRARY = {
+    "unknown-property": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "components": [{**_COMPONENT, "x-vendor": "acme"}],
+    },
+    "1.4-without-version": {"bomFormat": "CycloneDX", "specVersion": "1.4", "components": [_COMPONENT]},
+}
+
+
+@pytest.mark.parametrize("document", NORMALISED_BY_THE_LIBRARY.values(), ids=NORMALISED_BY_THE_LIBRARY.keys())
+def test_an_input_augment_normalises_passes_and_the_output_is_valid(tmp_path, monkeypatch, document):
+    """Judged before augmentation, these failed a run that writes a valid SBOM."""
+    from sbomify_action.cli.main import run_pipeline
+    from sbomify_action.validation import validate_sbom_file_auto
+
+    config = _sbom_file_config(tmp_path, monkeypatch, document, augment=True)
+
+    run_pipeline(config)
+
+    assert validate_sbom_file_auto(str(tmp_path / "out.json")).valid is True
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        *NORMALISED_BY_THE_LIBRARY.values(),
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "components": [{**_COMPONENT, "hashes": [{"alg": "SHA-256", "content": "zz"}]}],
+        },
+    ],
+    ids=[*NORMALISED_BY_THE_LIBRARY.keys(), "bad-hash-content"],
+)
+def test_an_invalid_input_passed_through_verbatim_fails_the_final_check(tmp_path, monkeypatch, document):
+    """With AUGMENT, ENRICH and every override off nothing re-serialises the
+    document, so it would be published as supplied. Step 1 lets it through
+    because the library can read it; the check on the final document stops
+    it before anything is written or uploaded."""
+    from sbomify_action.cli.main import build_config, run_pipeline, validate_sbom
+
+    monkeypatch.chdir(tmp_path)
+    upload = Mock()
+    monkeypatch.setattr(cli_main, "upload_sbom", upload)
+    config = build_config(sbom_file=_write(tmp_path, document), token="t", component_id="c", output_file="out.json")
+    assert validate_sbom(config.sbom_file) == "cyclonedx"
+
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline(config)
+    assert exc.value.code == 1
+    assert not (tmp_path / "out.json").exists()
+    upload.assert_not_called()
+
+
+def test_an_invalid_cyclonedx_vex_fails_the_final_check(tmp_path, monkeypatch):
+    """Step 1 checked VEX, CBOM and HBOM against the schema too. They are
+    uploaded verbatim, so the final check is the one that sees them now."""
+    from sbomify_action.cli.main import run_pipeline
+
+    vex = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "vulnerabilities": [{"x-vendor": "acme"}]}
+    config = _sbom_file_config(tmp_path, monkeypatch, vex, bom_type="vex")
+
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline(config)
+    assert exc.value.code == 1
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_licence_shapes_the_pipeline_repairs_pass_the_final_check(tmp_path, monkeypatch):
+    """Passed through verbatim, Trivy's and cdxgen's licence shapes reach the
+    final check unrepaired. Refusing them there would fail inputs that pass
+    on master, so the check repairs a copy first, as Step 1 used to."""
+    from sbomify_action.cli.main import run_pipeline
+
+    config = _sbom_file_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "components": [
+                {**_COMPONENT, "licenses": [{"license": {"id": "GPLv2+"}}]},
+                {**_COMPONENT, "name": "b", "licenses": [{"license": {"name": "x", "text": "Copyright"}}]},
+            ],
+        },
+    )
+
+    run_pipeline(config)
+
+    assert (tmp_path / "out.json").exists()
+
+
 def test_an_sbom_file_with_no_components_still_passes(tmp_path, monkeypatch):
     """Only a lock file that yields nothing is suspect. A supplied SBOM that
     lists no components may be exactly right."""
