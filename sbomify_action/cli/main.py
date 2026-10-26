@@ -649,6 +649,14 @@ class Config:
         # Validate API base URL format with proper parsing
         self._validate_api_url()
 
+        # The Dependency-Track API key goes out with the upload; check where it
+        # is going now, not after the SBOM has been generated and enriched.
+        if self.upload and "dependency-track" in (self.upload_destinations or []):
+            from .._upload.destinations.dependency_track import DependencyTrackConfig
+
+            if dtrack := DependencyTrackConfig.from_env():
+                dtrack.validate_api_url()
+
     def _validate_api_url(self) -> None:
         """
         Validate and normalize the API base URL.

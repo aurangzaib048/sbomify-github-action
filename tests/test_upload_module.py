@@ -897,6 +897,18 @@ class TestDependencyTrackDestination(unittest.TestCase):
         self.assertIn("spdx", result.error_message)
 
     @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
+    def test_upload_refuses_plain_http_without_sending_key(self, mock_put):
+        """Library callers skip Config.validate, so the destination checks too."""
+        config = DependencyTrackConfig(api_key="test-key", api_url="http://dtrack.corp/api", project_id="uuid")
+        input = UploadInput(sbom_file="sbom.json", sbom_format="cyclonedx")
+
+        result = DependencyTrackDestination(config=config).upload(input)
+
+        self.assertFalse(result.success)
+        self.assertIn("DTRACK_API_URL", result.error_message)
+        mock_put.assert_not_called()
+
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
     def test_upload_success_with_parent_id(self, mock_put):
         """Test successful upload with parent id"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

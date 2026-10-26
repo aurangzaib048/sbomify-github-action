@@ -5,6 +5,8 @@ Dependency Track only supports CycloneDX format. SPDX uploads will be rejected.
 Configuration via environment variables (DTRACK_* prefix):
     DTRACK_API_KEY: API key for authentication (required)
     DTRACK_API_URL: Full API base URL (required). We append /v1/bom to this.
+                    Must be https://, since the API key travels with every
+                    request; http:// is accepted only for localhost.
                     Examples:
                     - https://dtrack.example.com/api (standard)
                     - https://api.dtrack.example.com (subdomain)
@@ -28,6 +30,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from sbomify_action.exceptions import ConfigurationError
+from sbomify_action.http_client import validate_endpoint_url
 from sbomify_action.logging_config import logger
 
 from ..protocol import DestinationConfig, UploadInput
@@ -103,6 +107,10 @@ class DependencyTrackConfig(DestinationConfig):
         """
         return bool(self.api_key and self.api_url)
 
+    def validate_api_url(self) -> None:
+        """Refuse a DTRACK_API_URL that the API key must not be sent to."""
+        validate_endpoint_url(self.api_url, "DTRACK_API_URL")
+
 
 class DependencyTrackDestination:
     """
@@ -161,6 +169,11 @@ class DependencyTrackDestination:
                 destination_name=self.name,
                 error_message="Dependency Track not configured (check DTRACK_* env vars)",
             )
+
+        try:
+            self._config.validate_api_url()
+        except ConfigurationError as e:
+            return UploadResult.failure_result(destination_name=self.name, error_message=str(e))
 
         # Dependency Track only supports CycloneDX format
         if input.sbom_format != "cyclonedx":

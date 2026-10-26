@@ -225,6 +225,31 @@ class TestConfig(unittest.TestCase):
         # Should not raise any exception - sbomify credentials not required
         config.validate()
 
+    def _dtrack_config(self, upload: bool = True) -> Config:
+        return Config(
+            token="",
+            component_id="",
+            sbom_file="/path/to/sbom.json",
+            upload=upload,
+            upload_destinations=["dependency-track"],
+        )
+
+    @patch.dict(os.environ, {"DTRACK_API_KEY": "k", "DTRACK_API_URL": "http://dtrack.corp/api"})
+    def test_config_validation_rejects_plain_http_dtrack_url(self):
+        """The DT API key goes out with the upload, so an http:// URL fails at
+        config time, before an SBOM is generated."""
+        with self.assertRaises(ConfigurationError) as cm:
+            self._dtrack_config().validate()
+        self.assertIn("DTRACK_API_URL", str(cm.exception))
+
+    @patch.dict(os.environ, {"DTRACK_API_KEY": "k", "DTRACK_API_URL": "http://dtrack.corp/api"})
+    def test_config_validation_ignores_dtrack_url_when_not_uploading(self):
+        self._dtrack_config(upload=False).validate()
+
+    @patch.dict(os.environ, {"DTRACK_API_KEY": "k", "DTRACK_API_URL": "https://dtrack.corp/api"})
+    def test_config_validation_accepts_https_dtrack_url(self):
+        self._dtrack_config().validate()
+
     @patch("sbomify_action.oidc.is_oidc_available", return_value=False)
     def test_config_validation_multi_destination_requires_sbomify_credentials(self, _mock_oidc):
         """Test that sbomify credentials ARE required when sbomify is one of multiple destinations."""
