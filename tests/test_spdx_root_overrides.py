@@ -350,3 +350,49 @@ def test_spdx3_overrides_land_on_the_root_element(tmp_path, described):
     assert packages["urn:spdx.dev:pkg-test"] == expected
     [spdx_document] = [e for e in result["@graph"] if e.get("type") == "SpdxDocument"]
     assert spdx_document["name"] == NAME
+
+
+# ---------------------------------------------------------------------------
+# Enrichment copies the root's supplier and version onto related packages.
+
+SUPPLIER = "Organization: sbomify"
+
+
+def test_lockfile_packages_inherit_from_the_described_package():
+    """trivy puts the lock file first, its dependencies next and the package
+    the document describes last. The lock file's supplier and version are the
+    component's, not those of whichever dependency comes first."""
+    from sbomify_action.enrichment import _enrich_lockfile_packages
+
+    root = "SPDXRef-Filesystem-956eda8d387b7ce0"
+    lockfile = "SPDXRef-Application-3bc52fafdd5c33c7"
+    document = syft_uv_lock()
+    document["packages"] = [
+        {**package(lockfile, "uv.lock", ""), "versionInfo": None, "supplier": None},
+        {**package(ARROW, "arrow", "1.4.0", "pkg:pypi/arrow@1.4.0"), "supplier": "Organization: arrow"},
+        {**package(root, "/github/workspace", VERSION, PURL), "supplier": SUPPLIER},
+    ]
+    document["relationships"] = [
+        {"spdxElementId": "SPDXRef-DOCUMENT", "relatedSpdxElement": root, "relationshipType": "DESCRIBES"}
+    ]
+    parsed = parse(document)
+
+    _enrich_lockfile_packages(parsed)
+
+    uv_lock = next(p for p in parsed.packages if p.spdx_id == lockfile)
+    assert (uv_lock.version, str(uv_lock.supplier)) == (VERSION, SUPPLIER)
+
+
+def test_self_references_inherit_from_the_described_package():
+    from sbomify_action.enrichment import _enrich_self_referencing_packages
+
+    document = syft_uv_lock()
+    itself = "SPDXRef-Package-python-sbomify-action-7495774778750db7"
+    document["packages"][-1].update(name="sbomify-action", supplier=SUPPLIER)
+    document["packages"].insert(1, package(itself, "sbomify-action", "26.10.2", "pkg:pypi/sbomify-action@26.10.2"))
+    parsed = parse(document)
+
+    assert _enrich_self_referencing_packages(parsed) == 1
+
+    suppliers = {p.spdx_id: str(p.supplier) for p in parsed.packages}
+    assert (suppliers[itself], suppliers[ARROW]) == (SUPPLIER, "NOASSERTION")
