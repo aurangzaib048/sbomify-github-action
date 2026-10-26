@@ -19,7 +19,7 @@ from license_expression import ExpressionError, Licensing, get_spdx_licensing
 if TYPE_CHECKING:
     from cyclonedx.model.component import Component
 from packageurl import PackageURL
-from spdx_tools.spdx.model import Document  # type: ignore[attr-defined]
+from spdx_tools.spdx.model import Document, Package, RelationshipType  # type: ignore[attr-defined]
 
 from .console import get_transformation_tracker
 from .logging_config import logger
@@ -508,6 +508,26 @@ def get_spdx_json_root_package(data: dict[str, Any]) -> dict[str, Any] | None:
         described += data["documentDescribes"]
     packages = {package.get("SPDXID"): package for package in data.get("packages") or []}
     return next((packages[ref] for ref in described if isinstance(ref, str) and ref in packages), None)
+
+
+def get_spdx_root_package(document: Document) -> Package | None:
+    """``get_spdx_json_root_package`` for a parsed SPDX 2 document.
+
+    spdx-tools turns ``documentDescribes`` into DESCRIBES relationships on
+    parse, so the relationships are all there is to read.
+    """
+    packages = {package.spdx_id: package for package in document.packages}
+    for relationship in document.relationships:
+        # NOASSERTION and NONE targets are objects, and unhashable.
+        target = relationship.related_spdx_element_id
+        if (
+            relationship.relationship_type == RelationshipType.DESCRIBES
+            and relationship.spdx_element_id == document.creation_info.spdx_id
+            and isinstance(target, str)
+            and target in packages
+        ):
+            return packages[target]
+    return None
 
 
 def sanitize_dependency_graph(bom: Bom) -> int:

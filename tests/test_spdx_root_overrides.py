@@ -126,7 +126,7 @@ def run_on_uv_lock(tmp_path: Path, monkeypatch, generated: dict, *, augment: boo
 
 
 @pytest.mark.parametrize("spdx_version", ["2.3", "2.2"])
-@pytest.mark.parametrize("augment", [False], ids=["augment-off"])
+@pytest.mark.parametrize("augment", [False, True], ids=["augment-off", "augment-on"])
 def test_overrides_land_on_the_described_package(tmp_path, monkeypatch, spdx_version, augment):
     result = run_on_uv_lock(tmp_path, monkeypatch, syft_uv_lock(spdx_version), augment=augment)
     packages = by_id(result)
@@ -137,6 +137,36 @@ def test_overrides_land_on_the_described_package(tmp_path, monkeypatch, spdx_ver
     root = packages[ROOT]
     assert root["versionInfo"] == VERSION
     assert purls(root) == [PURL]
+    assert result["name"] == NAME
+    if augment:
+        # Without augmentation COMPONENT_NAME names the document, not the package.
+        assert root["name"] == NAME
+
+
+def test_additional_packages_alone_are_not_renamed(tmp_path, monkeypatch):
+    """An SBOM built only from ADDITIONAL_PACKAGES describes nothing; the first
+    injected package is a dependency like any other."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ADDITIONAL_PACKAGES", "pkg:pypi/requests@2.32.0")
+    config = build_config(
+        lock_file="none",
+        sbom_format="spdx",
+        upload=False,
+        augment=True,
+        component_name=NAME,
+        component_version=VERSION,
+        component_purl=PURL,
+        output_file="out.spdx.json",
+    )
+    run_pipeline(config)
+
+    result = json.loads((tmp_path / "out.spdx.json").read_text())
+    [requests] = result["packages"]
+    assert (requests["name"], requests["versionInfo"], purls(requests)) == (
+        "requests",
+        "2.32.0",
+        ["pkg:pypi/requests@2.32.0"],
+    )
     assert result["name"] == NAME
 
 
@@ -202,4 +232,59 @@ def test_without_a_described_package_no_package_is_touched(tmp_path, caplog, des
         )
 
     assert apply_overrides(tmp_path, document)["packages"] == document["packages"]
+    assert "describes no package" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Augmentation, which writes the backend's metadata as well as the overrides.
+
+BACKEND = {"supplier": {"name": "sbomify"}, "licenses": ["Apache-2.0"]}
+
+
+def parse(document: dict):
+    from spdx_tools.spdx.parser.jsonlikedict.json_like_dict_parser import JsonLikeDictParser
+
+    return JsonLikeDictParser().parse(document)
+
+
+def snapshot(document) -> list[tuple]:
+    return [(p.spdx_id, p.name, p.version, p.supplier, p.license_declared) for p in document.packages]
+
+
+@pytest.mark.parametrize("several", [False, True], ids=["one-described", "several-described"])
+def test_augmentation_writes_to_the_described_package(several):
+    from sbomify_action.augmentation import augment_spdx_sbom
+
+    document = syft_uv_lock()
+    if several:
+        document["relationships"].append(
+            {"spdxElementId": "SPDXRef-DOCUMENT", "relatedSpdxElement": ATTRS, "relationshipType": "DESCRIBES"}
+        )
+    before = {row[0]: row for row in snapshot(parse(document))}
+
+    # Override, because syft fills supplier and licence with NOASSERTION.
+    augmented = augment_spdx_sbom(
+        parse(document), BACKEND, override_sbom_metadata=True, component_name=NAME, component_version=VERSION
+    )
+
+    after = {row[0]: row for row in snapshot(augmented)}
+    assert after[ARROW] == before[ARROW]
+    assert after[ATTRS] == before[ATTRS]
+    _, name, version, supplier, licence = after[ROOT]
+    assert (name, version, supplier.name, str(licence)) == (NAME, VERSION, "sbomify", "Apache-2.0")
+
+
+def test_augmentation_of_a_document_describing_nothing_changes_no_package(caplog):
+    from sbomify_action.augmentation import augment_spdx_sbom
+
+    document = syft_uv_lock()
+    document["relationships"] = document["relationships"][:-1]
+    before = snapshot(parse(document))
+
+    augmented = augment_spdx_sbom(
+        parse(document), BACKEND, override_sbom_metadata=True, component_name=NAME, component_version=VERSION
+    )
+
+    assert snapshot(augmented) == before
+    assert augmented.creation_info.name == NAME
     assert "describes no package" in caplog.text
