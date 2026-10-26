@@ -119,7 +119,9 @@ jobs:
       # Key the cache by day, seeded from the newest entry of the same month.
       # A fixed key is saved once and then restored forever (actions/cache
       # skips the save on an exact hit); this saves new data daily and
-      # starts clean each month, so nothing stale outlives its month.
+      # starts clean each month, so nothing stale outlives its month. Each
+      # matrix row has its own key: the rows run in parallel, and with one
+      # shared key the first to finish saved and the rest were discarded.
       - id: cache-date
         run: |
           echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
@@ -127,9 +129,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .sbomify-cache
-          key: sbomify-${{ runner.os }}-${{ steps.cache-date.outputs.month }}-${{ steps.cache-date.outputs.day }}
+          key: sbomify-${{ runner.os }}-${{ matrix.name }}-${{ steps.cache-date.outputs.month }}-${{ steps.cache-date.outputs.day }}
           restore-keys: |
-            sbomify-${{ runner.os }}-${{ steps.cache-date.outputs.month }}-
+            sbomify-${{ runner.os }}-${{ matrix.name }}-${{ steps.cache-date.outputs.month }}-
       - name: Generate additional packages from Dockerfile
         if: matrix.kind == 'container'
         run: ./scripts/generate_additional_packages.sh > container_additional_packages.txt
