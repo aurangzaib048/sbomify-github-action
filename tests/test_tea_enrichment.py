@@ -24,6 +24,7 @@ from sbomify_action._enrichment import cache
 from sbomify_action._enrichment.exceptions import TransientSourceError
 from sbomify_action._enrichment.registry import SourceRegistry
 from sbomify_action._enrichment.sources.tea import (
+    _MAX_DISCOVERY_ATTEMPTS,
     PURL_TYPE_TO_TEA_DOMAIN,
     TeaSource,
     _is_safe_url,
@@ -334,6 +335,26 @@ class TestTeaSourceFetch(unittest.TestCase):
             with pytest.raises(TransientSourceError):
                 self.source.fetch(self.purl, self.session)
         assert mock_client_cls.from_well_known.call_count == 2
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("sbomify_action._enrichment.sources.tea.TeaClient", autospec=True)
+    def test_given_up_domain_drops_out_with_one_warning(self, mock_client_cls):
+        """Packages after discovery is given up are neither attempted, warned about, nor cached."""
+        mock_client_cls.from_well_known.side_effect = TeaConnectionError("HTTP 530")
+        registry = SourceRegistry()
+        registry.register(self.source)
+        purls = [PackageURL.from_string(f"pkg:pypi/pkg{i}@1.0") for i in range(_MAX_DISCOVERY_ATTEMPTS + 5)]
+
+        with patch.object(cache, "set") as cache_set, self.assertLogs("sbomify_action", level="WARNING") as logs:
+            for purl in purls:
+                registry.fetch_metadata(purl, self.session)
+
+        assert mock_client_cls.from_well_known.call_count == _MAX_DISCOVERY_ATTEMPTS
+        given_up = [line for line in logs.output if "rest of this run" in line]
+        assert len(given_up) == 1 and "pypi.sbomify.com" in given_up[0]
+        # Only the packages that actually tried discovery are reported, not every one after.
+        assert sum("Transient failure from tea" in line for line in logs.output) == _MAX_DISCOVERY_ATTEMPTS
+        cache_set.assert_not_called()
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("sbomify_action._enrichment.sources.tea.TeaClient", autospec=True)

@@ -72,7 +72,13 @@ def _select_best_format(
     "--token",
     envvar="TEA_TOKEN",
     default=None,
-    help="Bearer token (prefer TEA_TOKEN env var to avoid shell history exposure)",
+    help=(
+        "Bearer token (prefer TEA_TOKEN env var to avoid shell history exposure). "
+        "Without --base-url it is sent to whatever API endpoint the discovered domain's "
+        ".well-known/tea names, which may be another host. SBOM enrichment also reads "
+        "TEA_TOKEN and sends it the same way to each package type's TEA server "
+        "(pypi.sbomify.com for PyPI). Set TEA_BASE_URL to send it to that one server only."
+    ),
 )
 @click.option(
     "--auth",

@@ -8,6 +8,8 @@ The source discovers the TEA server via ``.well-known/tea`` and fetches CLE
 lifecycle data.
 
 ``TEA_BASE_URL`` env var overrides auto-discovery for all PURL types.
+Without it, ``TEA_TOKEN`` is sent to whatever endpoint each domain's
+``.well-known/tea`` names; ``TEA_BASE_URL`` pins it to one server.
 
 Provides:
 - Release date, end-of-support, end-of-life from CLE events
@@ -133,6 +135,11 @@ def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
+def _domain_key(domain: str) -> str:
+    """Key for a discovered domain's client and its discovery failure count."""
+    return f"domain:{domain}:token:{_short_hash(os.getenv('TEA_TOKEN') or '')}"
+
+
 def _get_client(purl_type: str) -> TeaClient | None:
     """Get or create a cached TeaClient for the given PURL type."""
     token = os.getenv("TEA_TOKEN")
@@ -153,7 +160,7 @@ def _get_client(purl_type: str) -> TeaClient | None:
     if not domain:
         return None
 
-    cache_key = f"domain:{domain}:token:{hashlib.sha256((token or '').encode()).hexdigest()[:16]}"
+    cache_key = _domain_key(domain)
     if cache_key not in _client_cache:
         if _discovery_failures.get(cache_key, 0) >= _MAX_DISCOVERY_ATTEMPTS:
             # Transient, not a miss: returning None would persist these packages as having no TEA data.
@@ -162,10 +169,16 @@ def _get_client(purl_type: str) -> TeaClient | None:
             _client_cache[cache_key] = TeaClient.from_well_known(domain, token=token, timeout=DEFAULT_TIMEOUT)
         except Exception as exc:
             _discovery_failures[cache_key] = _discovery_failures.get(cache_key, 0) + 1
-            logger.warning(
-                f"TEA well-known discovery failed for {domain} "
-                f"(attempt {_discovery_failures[cache_key]}/{_MAX_DISCOVERY_ATTEMPTS}): {exc}"
-            )
+            if _discovery_failures[cache_key] >= _MAX_DISCOVERY_ATTEMPTS:
+                logger.warning(
+                    f"TEA well-known discovery failed for {domain} {_MAX_DISCOVERY_ATTEMPTS} times; "
+                    f"not using TEA for its packages for the rest of this run: {exc}"
+                )
+            else:
+                logger.warning(
+                    f"TEA well-known discovery failed for {domain} "
+                    f"(attempt {_discovery_failures[cache_key]}/{_MAX_DISCOVERY_ATTEMPTS}): {exc}"
+                )
             raise TransientSourceError(f"TEA well-known discovery failed for {domain}") from None
     return _client_cache[cache_key]
 
@@ -215,7 +228,10 @@ class TeaSource:
             # If an override is present but unsafe, treat TEA as unsupported
             # to avoid wasted calls and log spam.
             return _is_safe_url(str(base_url))
-        return purl.type in PURL_TYPE_TO_TEA_DOMAIN
+        domain = PURL_TYPE_TO_TEA_DOMAIN.get(purl.type)
+        # A domain whose discovery was given up drops out for the rest of the run, so each
+        # of its packages is not reported as a transient failure.
+        return domain is not None and _discovery_failures.get(_domain_key(domain), 0) < _MAX_DISCOVERY_ATTEMPTS
 
     def fetch(self, purl: PackageURL, session: requests.Session) -> NormalizedMetadata | None:
         """Discover TEA server from PURL type and fetch metadata."""
