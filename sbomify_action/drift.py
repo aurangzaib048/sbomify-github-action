@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from packageurl import PackageURL
 
 from . import format_display_name
+from ._runtime import get_platform
 from .exceptions import ForbiddenError
 from .job_summary import _read, _spdx_value, _walk
 from .logging_config import logger
@@ -28,6 +29,12 @@ if TYPE_CHECKING:
 
 #: Entries listed per category; the counts above them cover the rest.
 LIST_CAP = 25
+
+_WHY = (
+    "That usually means generation broke, not that the dependencies went away, and an SBOM "
+    "missing them reads as dependencies removed: a false statement to anyone relying on it "
+    "for the NTIA minimum elements or EU CRA compliance."
+)
 
 Previous = tuple[dict[str, Any], str]
 """A previous SBOM and, for the summary, where it came from."""
@@ -129,12 +136,36 @@ class Drift:
     suppliers: int = 0
     licenses: int = 0
 
-    def markdown(self) -> str:
+    @property
+    def collapsed(self) -> bool:
+        """More than half the previous SBOM's components are gone."""
+        return self.after * 2 < self.before
+
+    def collapse_message(self, failing: bool) -> str:
+        """Why a collapse matters, for the log."""
+        fell = f"This SBOM lists {self.after} components, down from {self.before} in {self.source}. {_WHY}"
+        if failing:
+            return (
+                f"{fell} Failing the run so it is not published. If the drop is real, set FAIL_ON_SBOM_COLLAPSE=false."
+            )
+        return f"{fell} Continuing because FAIL_ON_SBOM_COLLAPSE=false."
+
+    def markdown(self, failed: bool = False) -> str:
         lines = [
             "#### Changes since the previous SBOM",
             "",
             f"Compared with {self.source}.",
             "",
+        ]
+        if self.collapsed:
+            what = "Run failed: the" if failed else "The"
+            then = (
+                "Nothing was uploaded. If the drop is real, set `FAIL_ON_SBOM_COLLAPSE=false`."
+                if failed
+                else "`FAIL_ON_SBOM_COLLAPSE=false`, so the run went on."
+            )
+            lines += [f"> **{what} component count fell by more than half.** {_WHY} {then}", ""]
+        lines += [
             f"- **Components:** {self.before} → {self.after}",
             f"- **Added:** {len(self.added)} · **Removed:** {len(self.removed)}"
             f" · **Version changed:** {len(self.changed)}",
@@ -149,6 +180,14 @@ class Drift:
                 lines.append(f"- …and {len(entries) - LIST_CAP} more")
             lines += ["", "</details>"]
         return "\n".join(lines)
+
+
+def publish_collapse(drift: Drift) -> None:
+    """The job summary for a run the collapse gate stopped. Never raises."""
+    try:
+        get_platform().log_formatter().job_summary(f"### sbomify\n\n{drift.markdown(failed=True)}\n")
+    except Exception as e:
+        logger.warning(f"Could not write the run summary: {e}")
 
 
 def compare_with_previous(previous: Previous, current_path: str) -> Drift | None:

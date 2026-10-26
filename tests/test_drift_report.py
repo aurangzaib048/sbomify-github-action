@@ -16,13 +16,14 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
 from sbomify_action._runtime import use_platform
 from sbomify_action._runtime.platforms import GitHubPlatform
 from sbomify_action._upload.result import UploadResult
-from sbomify_action.cli.main import build_config, run_pipeline
+from sbomify_action.cli.main import build_config, cli, run_pipeline
 from sbomify_action.console import reset_audit_trail
-from sbomify_action.drift import compare_with_previous
+from sbomify_action.drift import Drift, compare_with_previous
 from sbomify_action.exceptions import APIError, ForbiddenError
 from sbomify_action.logging_config import warning_annotations
 
@@ -279,6 +280,102 @@ def test_a_token_that_cannot_read_the_component_back_is_not_a_warning(tmp_path, 
     assert HEADING not in summary.read_text(encoding="utf-8")
     hint = [r for r in caplog.records if "PREVIOUS_SBOM" in r.getMessage()]
     assert hint and all(r.levelno == logging.INFO for r in hint)
+
+
+COLLAPSED = _cdx(_lib("requests", "2.31.0"), _lib("idna", "3.7"))  # 5 -> 2: less than half
+
+
+def test_a_collapse_fails_the_run_before_anything_is_uploaded(tmp_path, summary, caplog):
+    """A broken generator, not 60% of the dependencies deleted: the SBOM must not be published."""
+    with _uploaded() as upload, pytest.raises(SystemExit) as exit_info:
+        _run(
+            tmp_path,
+            COLLAPSED,
+            upload=True,
+            token="tok",
+            component_id="comp-1",
+            previous_sbom=_write(tmp_path / "previous.cdx.json", PREVIOUS),
+        )
+
+    assert exit_info.value.code == 1
+    upload.assert_not_called()
+    assert (tmp_path / "sbom.cdx.json").exists()  # still there to inspect
+    errors = " ".join(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert "5" in errors and "2" in errors
+    assert "false" in errors.lower() and "FAIL_ON_SBOM_COLLAPSE" in errors
+    section = _drift_section(summary)
+    assert "**Components:** 5 → 2" in section
+    assert "FAIL_ON_SBOM_COLLAPSE" in section
+
+
+def test_the_gate_can_be_turned_off_for_a_drop_that_is_real(tmp_path, summary, caplog):
+    with _uploaded() as upload, caplog.at_level(logging.WARNING):
+        _run(
+            tmp_path,
+            COLLAPSED,
+            upload=True,
+            token="tok",
+            component_id="comp-1",
+            previous_sbom=_write(tmp_path / "previous.cdx.json", PREVIOUS),
+            fail_on_sbom_collapse=False,
+        )
+
+    upload.assert_called_once()
+    assert "FAIL_ON_SBOM_COLLAPSE" in caplog.text
+    assert "FAIL_ON_SBOM_COLLAPSE=false" in _drift_section(summary)
+
+
+def test_no_previous_sbom_means_no_gate(tmp_path, summary):
+    _run(tmp_path, _cdx())  # empty, and nothing to say it used to be bigger
+
+    assert (tmp_path / "sbom.cdx.json").exists()
+
+
+@pytest.mark.parametrize(("before", "after", "collapsed"), [(5, 2, True), (4, 2, False), (1, 0, True), (0, 0, False)])
+def test_collapse_means_more_than_half_gone(before, after, collapsed):
+    assert Drift(source="`previous`", before=before, after=after).collapsed is collapsed
+
+
+@pytest.mark.parametrize(
+    ("env", "args", "expected"),
+    [
+        ({}, [], True),
+        ({"FAIL_ON_SBOM_COLLAPSE": "false"}, [], False),
+        ({"FAIL_ON_SBOM_COLLAPSE": "true"}, ["--no-fail-on-sbom-collapse"], False),
+    ],
+)
+def test_the_settings_reach_the_config_like_the_other_booleans(tmp_path, env, args, expected):
+    lock_file = tmp_path / "requirements.txt"
+    lock_file.write_text("requests==2.28.0", encoding="utf-8")
+    with (
+        patch("sbomify_action.cli.main.run_pipeline") as run,
+        patch("sbomify_action.cli.main.setup_dependencies"),
+        patch("sbomify_action.cli.main.initialize_sentry"),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            ["--lock-file", str(lock_file), "--no-upload", *args],
+            env={"PREVIOUS_SBOM": "previous.cdx.json", **env},
+        )
+
+    assert result.exit_code == 0, result.output
+    config = run.call_args.args[0]
+    assert config.fail_on_sbom_collapse is expected
+    assert config.previous_sbom == "previous.cdx.json"
+
+
+def test_a_typo_in_the_gate_setting_fails_loudly(tmp_path):
+    """An unreadable value must not quietly turn the gate off."""
+    lock_file = tmp_path / "requirements.txt"
+    lock_file.write_text("requests==2.28.0", encoding="utf-8")
+    with patch("sbomify_action.cli.main.run_pipeline") as run, patch("sbomify_action.cli.main.setup_dependencies"):
+        result = CliRunner().invoke(
+            cli, ["--lock-file", str(lock_file), "--no-upload"], env={"FAIL_ON_SBOM_COLLAPSE": "flase"}
+        )
+
+    assert result.exit_code == 2
+    assert "FAIL_ON_SBOM_COLLAPSE" in result.output
+    run.assert_not_called()
 
 
 class TestCompare:

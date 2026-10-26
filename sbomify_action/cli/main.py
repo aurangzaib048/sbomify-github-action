@@ -38,7 +38,7 @@ from ..console import (
 from ..console import (
     print_banner as console_print_banner,
 )
-from ..drift import compare_with_previous, load_previous_sbom
+from ..drift import compare_with_previous, load_previous_sbom, publish_collapse
 from ..exceptions import (
     APIError,
     AuthError,
@@ -262,6 +262,7 @@ class Config:
     spec_version: Optional[str] = None
     oidc_audience: str | None = None
     previous_sbom: str | None = None
+    fail_on_sbom_collapse: bool = True
     # Set to True at runtime when config.token was obtained via OIDC exchange;
     # signals that the token is short-lived (default TTL 15 min) and should be
     # re-minted before long-running post-upload work (e.g. processors).
@@ -849,6 +850,7 @@ def build_config(
     spec_version: Optional[str] = None,
     oidc_audience: Optional[str] = None,
     previous_sbom: str | None = None,
+    fail_on_sbom_collapse: bool = True,
 ) -> Config:
     """
     Build and validate configuration from provided arguments.
@@ -1022,6 +1024,7 @@ def build_config(
         spec_version=spec_version,
         oidc_audience=oidc_audience,
         previous_sbom=previous_sbom or None,
+        fail_on_sbom_collapse=fail_on_sbom_collapse,
     )
 
     try:
@@ -1080,6 +1083,9 @@ def load_config() -> Config:
         bom_type=os.getenv("BOM_TYPE"),
         oidc_audience=os.getenv("OIDC_AUDIENCE"),
         previous_sbom=os.getenv("PREVIOUS_SBOM"),
+        fail_on_sbom_collapse=evaluate_boolean(
+            os.getenv("FAIL_ON_SBOM_COLLAPSE", "True"), source="FAIL_ON_SBOM_COLLAPSE"
+        ),
     )
 
 
@@ -2701,6 +2707,13 @@ def run_pipeline(config: Config) -> None:
         sys.exit(1)
 
     drift = compare_with_previous(previous_sbom, config.output_file) if previous_sbom else None
+    # Before the upload, so a collapsed SBOM is never published.
+    if drift and drift.collapsed:
+        if config.fail_on_sbom_collapse:
+            logger.error(drift.collapse_message(failing=True))
+            publish_collapse(drift)
+            sys.exit(1)
+        logger.warning(drift.collapse_message(failing=False))
 
     # Step 5: Upload SBOM to configured destinations
     sbom_id = None  # Store SBOM ID for potential release tagging (from sbomify)
@@ -3985,6 +3998,20 @@ def _parse_upload_destinations_callback(
     ),
 )
 @click.option(
+    "--fail-on-sbom-collapse/--no-fail-on-sbom-collapse",
+    default=True,
+    show_default=True,
+    callback=_make_bool_envvar_callback("FAIL_ON_SBOM_COLLAPSE", True),
+    is_eager=True,
+    help=(
+        "Fail the run, before anything is uploaded, when the SBOM lists fewer than half the "
+        "components of the previous one (see --previous-sbom). A drop like that usually means "
+        "generation broke, and the SBOM would read as dependencies removed: a false statement to "
+        "anyone relying on it for the NTIA minimum elements or EU CRA compliance. Turn off for a "
+        "release that really did shed most of its dependencies. [env: FAIL_ON_SBOM_COLLAPSE]"
+    ),
+)
+@click.option(
     "--telemetry/--no-telemetry",
     default=True,
     show_default=True,
@@ -4045,6 +4072,7 @@ def cli(
     spec_version: Optional[str],
     oidc_audience: Optional[str],
     previous_sbom: str | None,
+    fail_on_sbom_collapse: bool,
     working_dir: str | None,
     telemetry: bool,
     verbose: bool,
@@ -4192,6 +4220,7 @@ def cli(
         spec_version=spec_version,
         oidc_audience=oidc_audience,
         previous_sbom=previous_sbom,
+        fail_on_sbom_collapse=fail_on_sbom_collapse,
     )
 
     # Run the pipeline
