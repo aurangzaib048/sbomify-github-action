@@ -22,7 +22,7 @@ from .. import format_display_name
 from .._runtime import CIPlatform, get_platform, legacy_workspaces, workspace_candidates
 from .._upload import VALID_BOM_TYPES, VALID_DESTINATIONS
 from ..additional_packages import inject_additional_packages
-from ..augmentation import augment_sbom_from_file
+from ..augmentation import _is_cdx_version_at_least, augment_sbom_from_file
 from ..console import (
     get_audit_trail,
     log_group,
@@ -1871,6 +1871,56 @@ def _write_final_output(src_path: str, dst_path: str, bom_type: Optional[str]) -
         f.write(content)
 
 
+def _finalize_sbom_fields(sbom_file: str, config: "Config") -> None:
+    """Write the document fields CISA 2026 asks for that only the pipeline knows.
+
+    Runs last, after augmentation and enrichment, so it only fills what is
+    still missing: a value from sbomify.json or the sbomify API, or one the
+    generator wrote itself, stands.
+    """
+    # Generation context (CISA 2026 "SBOM Generation Context") follows from what
+    # the action was given. CycloneDX 1.6 defines pre-build as information
+    # "obtained prior to a build process [that] may contain source files and
+    # development artifacts and manifests" -- a lock file, or a scan of the
+    # source tree -- and post-build as information "obtained after a build
+    # process has completed": a built image. A supplied SBOM_FILE gets none,
+    # because nothing says how it was produced, and neither does a document
+    # assembled from ADDITIONAL_PACKAGES alone.
+    if config.is_additional_packages_only or config.sbom_file:
+        return
+    phase = "post-build" if config.docker_image else "pre-build"
+
+    path = Path(sbom_file)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if _declare_generation_context(document, phase):
+        path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info(f"Declared SBOM generation context: {phase}")
+        get_audit_trail().record_lifecycle_added(phase, source="sbomify-action")
+
+
+def _declare_generation_context(document: dict[str, Any], phase: str) -> bool:
+    """Record ``phase`` unless the document already declares one; True if written.
+
+    CycloneDX has ``metadata.lifecycles`` from 1.5. SPDX 2 has no field for it,
+    so the phase goes in ``creationInfo.comment`` in the form augmentation
+    already writes. SPDX 3 is never generated from a lock file or an image.
+    """
+    if "spdxVersion" in document:
+        info = document.setdefault("creationInfo", {})
+        comment = info.get("comment") or ""
+        if "Lifecycle phase:" in comment:
+            return False
+        info["comment"] = f"{comment} | Lifecycle phase: {phase}" if comment else f"Lifecycle phase: {phase}"
+        return True
+    if document.get("bomFormat") != "CycloneDX" or not _is_cdx_version_at_least(document.get("specVersion"), 1, 5):
+        return False
+    metadata = document.setdefault("metadata", {})
+    if metadata.get("lifecycles"):
+        return False
+    metadata["lifecycles"] = [{"phase": phase}]
+    return True
+
+
 def _finalize_output_content(content: str, bom_type: Optional[str]) -> str:
     """Return the content to upload after format-specific output fixes.
 
@@ -2664,6 +2714,9 @@ def run_pipeline(config: Config) -> None:
         final_sbom_file = get_last_sbom_from_last_step()
         if not final_sbom_file:
             raise FileProcessingError("No SBOM file found to finalize")
+
+        if is_sbom:
+            _finalize_sbom_fields(final_sbom_file, config)
 
         # Get the parent directory of the file path
         parent_dir = Path(config.output_file).parent
