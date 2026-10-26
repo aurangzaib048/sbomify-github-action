@@ -179,9 +179,12 @@ jobs:
           # this job doesn't use.
           : "${TOKEN:?sbomify token missing for ${EVENT_NAME}}"
           # The placeholder is committed, so remove it: the upload below then
-          # fails if generation didn't write the file.
+          # fails if generation didn't write the file. Install first, because
+          # hatchling's editable build needs the sbom-files path to exist, and
+          # run without re-syncing.
+          uv sync --frozen --no-dev
           rm -f sbomify-action.cdx.json
-          uv run --frozen --no-dev sbomify-action
+          uv run --frozen --no-dev --no-sync sbomify-action
 
       - name: Upload SBOM
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
