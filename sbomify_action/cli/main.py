@@ -38,6 +38,7 @@ from ..console import (
 from ..console import (
     print_banner as console_print_banner,
 )
+from ..drift import compare_with_previous, load_previous_sbom
 from ..exceptions import (
     APIError,
     AuthError,
@@ -260,6 +261,7 @@ class Config:
     bom_type: Optional[str] = None
     spec_version: Optional[str] = None
     oidc_audience: str | None = None
+    previous_sbom: str | None = None
     # Set to True at runtime when config.token was obtained via OIDC exchange;
     # signals that the token is short-lived (default TTL 15 min) and should be
     # re-minted before long-running post-upload work (e.g. processors).
@@ -846,6 +848,7 @@ def build_config(
     bom_type: Optional[str] = None,
     spec_version: Optional[str] = None,
     oidc_audience: Optional[str] = None,
+    previous_sbom: str | None = None,
 ) -> Config:
     """
     Build and validate configuration from provided arguments.
@@ -1018,6 +1021,7 @@ def build_config(
         bom_type=normalized_bom_type,
         spec_version=spec_version,
         oidc_audience=oidc_audience,
+        previous_sbom=previous_sbom or None,
     )
 
     try:
@@ -1075,6 +1079,7 @@ def load_config() -> Config:
         sbom_format=os.getenv("SBOM_FORMAT", "cyclonedx"),
         bom_type=os.getenv("BOM_TYPE"),
         oidc_audience=os.getenv("OIDC_AUDIENCE"),
+        previous_sbom=os.getenv("PREVIOUS_SBOM"),
     )
 
 
@@ -2517,6 +2522,7 @@ def run_pipeline(config: Config) -> None:
     # What the document carried before any enrichment step touched it, so the
     # job summary can show what enrichment added.
     coverage_before = field_coverage(STEP_1_FILE) if is_sbom else None
+    previous_sbom = load_previous_sbom(config, FORMAT) if is_sbom else None
 
     # Step 1.4: Transitive Dependency Discovery (for lockfiles that support expansion)
     # Note: Steps 1.x are substeps of the main SBOM generation step (Step 1).
@@ -2694,6 +2700,8 @@ def run_pipeline(config: Config) -> None:
         _log_step_end(4, success=False)
         sys.exit(1)
 
+    drift = compare_with_previous(previous_sbom, config.output_file) if previous_sbom else None
+
     # Step 5: Upload SBOM to configured destinations
     sbom_id = None  # Store SBOM ID for potential release tagging (from sbomify)
     if config.upload:
@@ -2833,7 +2841,7 @@ def run_pipeline(config: Config) -> None:
         logger.warning("Product releases specified but no SBOM ID available (upload may have been disabled or failed)")
         _log_step_end(6, success=False)
 
-    publish_run_summary(config, FORMAT, coverage_before, sbom_id)
+    publish_run_summary(config, FORMAT, coverage_before, sbom_id, drift)
     _finalize_run(config)
 
 
@@ -3961,6 +3969,22 @@ def _parse_upload_destinations_callback(
     help="Audience claim for GitHub OIDC trusted publishing (default: sbomify.com; override for self-hosted).",
 )
 @click.option(
+    "--previous-sbom",
+    envvar="PREVIOUS_SBOM",
+    type=click.Path(exists=False, dir_okay=False),
+    default=None,
+    help=(
+        "SBOM from the previous release to compare this run against, such as a release asset "
+        "downloaded in an earlier step. The job summary then lists the components added, removed "
+        "and changed in version since that release, and how many changed supplier or license. "
+        "NTIA asks for a new SBOM with every release and the EU CRA for one covering at least "
+        "your top-level dependencies: the comparison is how you see what a release changed, and "
+        "notice a run whose SBOM lost components it should still list. When unset and the run "
+        "uploads to sbomify, the component's last SBOM there is used. A missing file skips the "
+        "comparison."
+    ),
+)
+@click.option(
     "--telemetry/--no-telemetry",
     default=True,
     show_default=True,
@@ -4020,6 +4044,7 @@ def cli(
     bom_type: Optional[str],
     spec_version: Optional[str],
     oidc_audience: Optional[str],
+    previous_sbom: str | None,
     working_dir: str | None,
     telemetry: bool,
     verbose: bool,
@@ -4166,6 +4191,7 @@ def cli(
         bom_type=bom_type,
         spec_version=spec_version,
         oidc_audience=oidc_audience,
+        previous_sbom=previous_sbom,
     )
 
     # Run the pipeline

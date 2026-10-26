@@ -23,6 +23,7 @@ from .validation import detect_sbom_format_and_version
 
 if TYPE_CHECKING:
     from .cli.main import Config
+    from .drift import Drift
 
 
 def _spdx_value(value: Any) -> bool:
@@ -98,6 +99,7 @@ def publish_run_summary(
     sbom_format: str,
     before: dict[str, int] | None,
     sbom_id: str | None,
+    drift: "Drift | None" = None,
 ) -> None:
     """Write the job summary and step outputs for a finished SBOM run.
 
@@ -149,6 +151,8 @@ def publish_run_summary(
             for name in _CYCLONEDX:
                 cells = [_cell(before, name), _cell(after, name)] if before else [_cell(after, name)]
                 lines.append(f"| {name} | {' | '.join(cells)} |")
+        if drift:
+            lines += ["", drift.markdown()]
 
         formatter.job_summary("\n".join(lines) + "\n")
     except Exception as e:
