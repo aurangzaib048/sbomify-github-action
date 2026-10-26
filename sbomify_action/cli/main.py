@@ -1517,7 +1517,10 @@ def _expand_lock_file_or_substitute(path: str) -> str:
         searched = (named.parent, Path.cwd(), *roots)
     else:
         searched = (Path.cwd() / named.parent, *(root / named.parent for root in roots))
-    directories = {d.resolve() for d in searched if d.is_dir()}
+    # The legacy roots alone do not keep the repository root out: inside the
+    # action's container the mount point *is* the root. So under WORKING_DIR
+    # only directories inside it are scanned; see inside_working_dir.
+    directories = {d.resolve() for d in searched if d.is_dir() and inside_working_dir(d)}
 
     # .NET project files are matched by suffix rather than by name, so a scan
     # over fixed names alone could never substitute one -- a stale

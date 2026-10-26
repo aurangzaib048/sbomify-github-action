@@ -302,6 +302,16 @@ class TestInputsResolveInsideWorkingDir:
         assert result.exit_code == 0, result.output
         assert Path(seen["lock_file"]).resolve() == monorepo / "uv.lock"
 
+    def test_a_stale_lock_file_is_not_substituted_from_the_mount_point(self, monorepo):
+        """Inside the action's container the mount point the substitution scans,
+        /github/workspace, is the repository root. A stale LOCK_FILE in a
+        package must not be answered by the root's lock file."""
+        with patch.object(_main, "legacy_workspaces", return_value=(monorepo,)):
+            result, seen = _run_action(monorepo, WORKING_DIR="packages/api", LOCK_FILE="poetry.lock")
+
+        assert "lock_file" not in seen, f"built from {seen.get('lock_file')}"
+        assert result.exit_code != 0
+
     def test_the_confinement_ends_with_the_run(self, monorepo):
         """It is process state, so it must not outlive the invocation that set it."""
         from sbomify_action._runtime import inside_working_dir
