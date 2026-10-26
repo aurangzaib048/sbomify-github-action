@@ -6,7 +6,8 @@ Configuration via environment variables (DTRACK_* prefix):
     DTRACK_API_KEY: API key for authentication (required)
     DTRACK_API_URL: Full API base URL (required). We append /v1/bom to this.
                     Must be https://, since the API key travels with every
-                    request; http:// is accepted only for localhost.
+                    request; http:// is accepted only for localhost unless
+                    DTRACK_ALLOW_INSECURE_HTTP is set.
                     Examples:
                     - https://dtrack.example.com/api (standard)
                     - https://api.dtrack.example.com (subdomain)
@@ -18,6 +19,12 @@ Configuration via environment variables (DTRACK_* prefix):
     DTRACK_PARENT_NAME: Name of the parent project
     DTRACK_PARENT_VERSION: Version of the parent project
     DTRACK_IS_LATEST: Mark the uploaded BOM as the latest version
+    DTRACK_ALLOW_INSECURE_HTTP: Accept an http:// DTRACK_API_URL on a host other
+                    than localhost (default: false). Plain http:// sends the
+                    API key unencrypted on every upload, where anyone on the
+                    network path can read it and use it to upload or alter
+                    SBOMs in Dependency-Track. Only for an internal instance
+                    on a network you trust.
 
 Note: Project name and version come from the global COMPONENT_NAME and COMPONENT_VERSION
 environment variables, not from DTRACK_* prefixed variables.
@@ -71,6 +78,7 @@ class DependencyTrackConfig(DestinationConfig):
     parent_name: str | None = None
     parent_version: str | None = None
     is_latest: bool = False
+    allow_insecure_http: bool = False
 
     @classmethod
     def from_env(cls) -> Optional["DependencyTrackConfig"]:
@@ -96,6 +104,7 @@ class DependencyTrackConfig(DestinationConfig):
             parent_name=cls._get_env("PARENT_NAME"),
             parent_version=cls._get_env("PARENT_VERSION"),
             is_latest=cls._get_env_bool("IS_LATEST", default=False),
+            allow_insecure_http=cls._get_env_bool("ALLOW_INSECURE_HTTP", default=False),
         )
 
     def is_configured(self) -> bool:
@@ -109,7 +118,12 @@ class DependencyTrackConfig(DestinationConfig):
 
     def validate_api_url(self) -> None:
         """Refuse a DTRACK_API_URL that the API key must not be sent to."""
-        validate_endpoint_url(self.api_url, "DTRACK_API_URL")
+        validate_endpoint_url(
+            self.api_url,
+            "DTRACK_API_URL",
+            allow_http=self.allow_insecure_http,
+            allow_http_setting="DTRACK_ALLOW_INSECURE_HTTP",
+        )
 
 
 class DependencyTrackDestination:
@@ -133,6 +147,8 @@ class DependencyTrackDestination:
         DTRACK_PARENT_NAME: Name of the parent project (optional)
         DTRACK_PARENT_VERSION: Version of the parent project (optional)
         DTRACK_IS_LATEST: Mark the uploaded BOM as the latest version (default: false)
+        DTRACK_ALLOW_INSECURE_HTTP: Accept http:// to a non-localhost DTRACK_API_URL,
+            which sends the API key unencrypted (default: false)
     """
 
     def __init__(self, config: Optional[DependencyTrackConfig] = None):

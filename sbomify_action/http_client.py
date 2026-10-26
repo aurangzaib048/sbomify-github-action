@@ -1,10 +1,14 @@
 """HTTP client utilities with consistent user agent."""
 
 import ipaddress
+import logging
 from typing import Optional
 from urllib.parse import urlsplit
 
 from .exceptions import ConfigurationError
+
+# Not logging_config's logger: that module imports _runtime, which imports this one.
+logger = logging.getLogger(__name__)
 
 
 def _get_package_version() -> str:
@@ -60,7 +64,13 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def validate_endpoint_url(url: str, setting: str) -> None:
+def validate_endpoint_url(
+    url: str,
+    setting: str,
+    *,
+    allow_http: bool = False,
+    allow_http_setting: str | None = None,
+) -> None:
     """Refuse an endpoint URL that would put the credentials sent to it at risk.
 
     Every upload destination sends a token or API key with each request, so its
@@ -73,6 +83,10 @@ def validate_endpoint_url(url: str, setting: str) -> None:
         url: The configured endpoint URL.
         setting: The setting it came from (e.g. ``DTRACK_API_URL``), named in
             the error so the user knows what to fix.
+        allow_http: Accept http:// to any host, with a warning. Only for an
+            explicit user opt-in; the other checks still apply.
+        allow_http_setting: The opt-in setting behind ``allow_http``, offered
+            in the error and named in the warning.
 
     Raises:
         ConfigurationError: If the URL is not safe to send credentials to.
@@ -92,8 +106,20 @@ def validate_endpoint_url(url: str, setting: str) -> None:
     if not parts.hostname:
         raise ConfigurationError(f"{setting} must include a valid hostname")
     if parts.scheme == "http" and not _is_loopback(parts.hostname):
+        if allow_http:
+            logger.warning(
+                f"{setting} uses plain http:// to {parts.hostname} ({allow_http_setting}=true): the "
+                "API key or token sent with every request crosses the network unencrypted."
+            )
+            return
+        opt_in = (
+            f" If every network hop to {parts.hostname} is one you trust, set {allow_http_setting}=true "
+            "to accept that risk."
+            if allow_http_setting
+            else ""
+        )
         raise ConfigurationError(
             f"{setting} must use https:// for {parts.hostname}. Over plain http:// the token or "
             "API key sent with every request crosses the network unencrypted, readable by anyone "
-            "on the path. http:// is only accepted for localhost, 127.0.0.1 and ::1."
+            f"on the path. http:// is only accepted for localhost, 127.0.0.1 and ::1.{opt_in}"
         )

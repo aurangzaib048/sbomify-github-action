@@ -241,6 +241,14 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ConfigurationError) as cm:
             self._dtrack_config().validate()
         self.assertIn("DTRACK_API_URL", str(cm.exception))
+        self.assertIn("DTRACK_ALLOW_INSECURE_HTTP", str(cm.exception))
+
+    @patch.dict(
+        os.environ,
+        {"DTRACK_API_KEY": "k", "DTRACK_API_URL": "http://dtrack.corp/api", "DTRACK_ALLOW_INSECURE_HTTP": "true"},
+    )
+    def test_config_validation_allows_http_dtrack_url_when_opted_in(self):
+        self._dtrack_config().validate()
 
     @patch.dict(os.environ, {"DTRACK_API_KEY": "k", "DTRACK_API_URL": "http://dtrack.corp/api"})
     def test_config_validation_ignores_dtrack_url_when_not_uploading(self):

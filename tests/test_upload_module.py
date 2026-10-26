@@ -909,6 +909,35 @@ class TestDependencyTrackDestination(unittest.TestCase):
         mock_put.assert_not_called()
 
     @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
+    def test_upload_sends_over_http_when_opted_in(self, mock_put):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"bomFormat": "CycloneDX", "specVersion": "1.6"}, f)
+            sbom_file = f.name
+        try:
+            mock_put.return_value = Mock(ok=True, status_code=200, json=Mock(return_value={"token": "t"}))
+            with patch.dict(
+                os.environ,
+                {
+                    "DTRACK_API_KEY": "test-key",
+                    "DTRACK_API_URL": "http://dtrack.corp/api",
+                    "DTRACK_PROJECT_ID": "uuid",
+                    "DTRACK_ALLOW_INSECURE_HTTP": "true",
+                },
+                clear=True,
+            ):
+                config = DependencyTrackConfig.from_env()
+            self.assertTrue(config.allow_insecure_http)
+
+            result = DependencyTrackDestination(config=config).upload(
+                UploadInput(sbom_file=sbom_file, sbom_format="cyclonedx")
+            )
+
+            self.assertTrue(result.success)
+            self.assertEqual(mock_put.call_args[0][0], "http://dtrack.corp/api/v1/bom")
+        finally:
+            Path(sbom_file).unlink()
+
+    @patch("sbomify_action._upload.destinations.dependency_track.requests.put")
     def test_upload_success_with_parent_id(self, mock_put):
         """Test successful upload with parent id"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

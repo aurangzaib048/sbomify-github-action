@@ -145,6 +145,24 @@ class TestValidateEndpointUrl(unittest.TestCase):
         self.assert_rejected("https://", "hostname")
         self.assert_rejected("https:///api", "hostname")
 
+    def test_http_rejection_names_the_opt_in(self):
+        with self.assertRaises(ConfigurationError) as cm:
+            validate_endpoint_url("http://dtrack.corp", "SOME_URL", allow_http_setting="SOME_ALLOW_HTTP")
+        self.assertIn("SOME_ALLOW_HTTP=true", str(cm.exception))
+
+    def test_allow_http_accepts_remote_http_with_warning(self):
+        with self.assertLogs("sbomify_action.http_client", "WARNING") as logs:
+            validate_endpoint_url(
+                "http://dtrack.corp/api", "SOME_URL", allow_http=True, allow_http_setting="SOME_ALLOW_HTTP"
+            )
+        self.assertIn("SOME_ALLOW_HTTP", logs.output[0])
+        self.assertIn("unencrypted", logs.output[0])
+
+    def test_allow_http_does_not_relax_other_checks(self):
+        for url in ("ftp://dtrack.corp", "http://user:pw@dtrack.corp", "http://"):
+            with self.subTest(url=url), self.assertRaises(ConfigurationError):
+                validate_endpoint_url(url, "SOME_URL", allow_http=True)
+
 
 if __name__ == "__main__":
     unittest.main()
