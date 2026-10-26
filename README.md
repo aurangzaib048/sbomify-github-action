@@ -237,8 +237,8 @@ the way, without trusting anything in between.
 
 Sign `OUTPUT_FILE` after the action has written it, and change nothing afterwards: the signature
 covers the exact bytes. Every CycloneDX SBOM the action writes carries a `serialNumber`, and every
-SPDX 2 SBOM a unique `documentNamespace`. BSI TR-03183-2 calls that identifier the SBOM-URI, and
-`actions/attest` will not take a CycloneDX file without one.
+SPDX 2 SBOM a `documentNamespace` (one is minted if the input has none). BSI TR-03183-2 calls that
+identifier the SBOM-URI, and `actions/attest` will not take a CycloneDX file without one.
 
 ### On GitHub
 
@@ -275,8 +275,9 @@ Anyone with the artifact can verify it:
 gh attestation verify dist/my-app --repo OWNER/REPO --predicate-type https://cyclonedx.org/bom
 ```
 
-For SPDX 2.3, use `--predicate-type https://spdx.dev/Document/v2.3`. Without the flag, `gh` looks for
-build provenance rather than an SBOM. `actions/attest` reads CycloneDX and SPDX 2, not SPDX 3.
+For SPDX, use `--predicate-type https://spdx.dev/Document/v2.3` (or `v2.2` for an SPDX 2.2
+document). Without the flag, `gh` looks for build provenance rather than an SBOM. `actions/attest`
+reads CycloneDX and SPDX 2, not SPDX 3.
 
 ### On GitLab, Bitbucket and private GitHub repositories
 
@@ -306,7 +307,7 @@ the workflow's OIDC token once the job has `id-token: write` and `packages: writ
 - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 - run: |
     echo "$GITHUB_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-    cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "ghcr.io/$GITHUB_REPOSITORY@$DIGEST"
+    cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "ghcr.io/${GITHUB_REPOSITORY,,}@$DIGEST"
   env:
     GITHUB_TOKEN: ${{ github.token }}
     DIGEST: ${{ steps.build.outputs.digest }}
