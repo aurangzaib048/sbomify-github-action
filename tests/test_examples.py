@@ -31,6 +31,9 @@ def _settings(path: Path) -> tuple[list[str], list[str]]:
                     if step.get("uses", "").startswith("sbomify/sbomify-action@"):
                         env += step.get("env", {})
                         inputs += step.get("with", {})
+                    # Without it a missing SBOM only warns, and a misspelt key is ignored.
+                    if step.get("uses", "").startswith("actions/upload-artifact@"):
+                        assert step["with"].get("if-no-files-found") == "error", f"{path}: {step}"
         case "gitlab":
             for job in doc.values():
                 if isinstance(job, dict) and "script" in job:
